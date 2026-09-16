@@ -310,7 +310,7 @@ def evaluate_symbol(df: pd.DataFrame):
     Looks at every internal OB that is still ACTIVE (unmitigated) as of
     the last closed candle. A match requires that OB's own candle (the
     exact candle it was built from) to ALSO be the exact candle of a
-    same-direction swing label (HH/HL for a bullish OB, LH/LL for a
+    same-direction swing label (LL/HL for a bullish OB, HH/LH for a
     bearish OB) - not just nearby, the same bar_index - and that candle
     must fall within the last SIGNAL_LOOKBACK closed candles (default 20).
     """
@@ -332,12 +332,17 @@ def evaluate_symbol(df: pd.DataFrame):
         if not (start_i <= ob.bar_index <= last_i):
             continue
         labels_here = swing_labels_by_bar.get(ob.bar_index, set())
-        if ob.bias == 1 and labels_here & {"HL", "HH"}:
+        # A bullish OB candle is picked as the LOWEST point in its leg
+        # (argmin parsedLow), so it naturally lands on a LOW-type swing
+        # pivot: LL or HL. A bearish OB candle is the HIGHEST point in
+        # its leg (argmax parsedHigh), landing on a HIGH-type pivot:
+        # HH or LH.
+        if ob.bias == 1 and labels_here & {"LL", "HL"}:
             all_signals.append({"bar_index": ob.bar_index, "bias": "bullish", "ob": ob,
-                                 "matched_labels": sorted(labels_here & {"HL", "HH"})})
-        elif ob.bias == -1 and labels_here & {"LH", "LL"}:
+                                 "matched_labels": sorted(labels_here & {"LL", "HL"})})
+        elif ob.bias == -1 and labels_here & {"HH", "LH"}:
             all_signals.append({"bar_index": ob.bar_index, "bias": "bearish", "ob": ob,
-                                 "matched_labels": sorted(labels_here & {"LH", "LL"})})
+                                 "matched_labels": sorted(labels_here & {"HH", "LH"})})
 
     if not all_signals:
         return None
