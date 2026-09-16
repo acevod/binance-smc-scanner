@@ -7,17 +7,19 @@ on:
 
 jobs:
   scan:
-    runs-on: ubuntu-latest
+    # Runs on YOUR own machine (phone via Termux/proot-distro, or a PC),
+    # not GitHub's servers - Binance blocks GitHub's own datacenter IPs.
+    # See README.md "Self-hosted runner" section for setup.
+    runs-on: self-hosted
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
+      # No actions/setup-python here on purpose: on a self-hosted runner
+      # we just use whatever python3 is already installed on the machine
+      # (see README - installed via apt inside the proot-distro Ubuntu).
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip3 install -r requirements.txt
 
       - name: Run scanner
         env:
@@ -25,4 +27,4 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TIMEFRAME: "30m"
           GENERATE_CHARTS: "true"
-        run: python scan_binance.py
+        run: python3 scan_binance.py
