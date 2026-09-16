@@ -1,0 +1,28 @@
+name: Binance SMC Scan
+
+on:
+  workflow_dispatch: {}          # manual "Run workflow" button on GitHub
+  repository_dispatch:
+    types: [telegram-scan]       # triggered remotely by the Cloudflare Worker
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run scanner
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TIMEFRAME: "30m"
+          GENERATE_CHARTS: "true"
+        run: python scan_binance.py
