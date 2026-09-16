@@ -172,7 +172,7 @@ USDC-margined pairs are excluded too).
 > Within the last `SIGNAL_LOOKBACK` candles (default 20), there's a
 > candle that is BOTH the exact candle an active (unmitigated) internal
 > Order Block was built from AND the exact candle of a same-direction
-> swing label (HH/HL for a bullish OB, LH/LL for a bearish OB) from the
+> swing label (LL/HL for a bullish OB, HH/LH for a bearish OB) from the
 > HH.pine logic — the two must land on the same bar, not just nearby.
 > If more than one candle in the window qualifies, the most recent one
 > is used as the headline result.
