@@ -19,7 +19,7 @@ jobs:
       # we just use whatever python3 is already installed on the machine
       # (see README - installed via apt inside the proot-distro Ubuntu).
       - name: Install dependencies
-        run: pip3 install -r requirements.txt
+        run: pip3 install --break-system-packages -r requirements.txt
 
       - name: Run scanner
         env:
