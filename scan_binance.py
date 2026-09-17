@@ -51,13 +51,27 @@ except ImportError:
 # ---------------------------------------------------------------------------
 TIMEFRAME       = os.environ.get("TIMEFRAME", "30m")
 CANDLE_LIMIT    = int(os.environ.get("CANDLE_LIMIT", "500"))
-SIGNAL_LOOKBACK = int(os.environ.get("SIGNAL_LOOKBACK", "10"))  # how many recent closed candles to scan
+SIGNAL_LOOKBACK = int(os.environ.get("SIGNAL_LOOKBACK", "15"))  # how many recent closed candles to scan
 MAX_CONCURRENCY = int(os.environ.get("MAX_CONCURRENCY", "8"))
 QUOTE           = os.environ.get("QUOTE", "USDT")
 GENERATE_CHARTS = os.environ.get("GENERATE_CHARTS", "true").lower() == "true"
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID")
+
+# --- Chart appearance - edit these to restyle the PNG charts ---
+CHART_CANDLES           = int(os.environ.get("CHART_CANDLES", "50"))
+# Dark mode preset (TradingView-style dark theme). Swap CHART_BG_COLOR /
+# CHART_TITLE_COLOR back to "#ffffff" / "#131722" for light mode.
+CHART_BG_COLOR           = "#131722"   # chart background (figure + plot area)
+CHART_UP_COLOR           = "#26a69a"   # bullish candle color
+CHART_DOWN_COLOR         = "#ef5350"   # bearish candle color
+CHART_OB_BULLISH_COLOR   = "#26a69a"   # bullish OB zone (box + border lines)
+CHART_OB_BEARISH_COLOR   = "#ef5350"   # bearish OB zone (box + border lines)
+CHART_OB_ZONE_ALPHA      = 0.15        # OB box fill opacity (0-1)
+CHART_BOS_CHOCH_COLOR    = "#9598a1"   # BOS/CHoCH dashed line + label
+CHART_SIGNAL_LINE_COLOR  = "#ffca28"   # vertical dotted line on the signal candle
+CHART_TITLE_COLOR        = "#d1d4dc"   # title text color
 
 # --- fixed indicator defaults (match the user's TradingView settings) ---
 INTERNAL_LEN = 5      # LuxAlgo internal structure length (fixed in the script)
@@ -437,8 +451,6 @@ def render_chart(match) -> bytes | None:
     except ImportError:
         return None
 
-    CHART_CANDLES = int(os.environ.get("CHART_CANDLES", "50"))
-
     df = match["df"].copy()
     df["date"] = pd.to_datetime(df["ts"], unit="ms", utc=True)
     df = df.set_index("date")
@@ -446,16 +458,22 @@ def render_chart(match) -> bytes | None:
     window_start_idx = len(df) - len(plot_df)  # original df index of plot_df's first row
 
     ob = match["ob"]
-    ob_color = "#26a69a" if ob.bias == 1 else "#ef5350"
+    ob_color = CHART_OB_BULLISH_COLOR if ob.bias == 1 else CHART_OB_BEARISH_COLOR
     ob_time = df.index[ob.bar_index] if ob.bar_index < len(df) else plot_df.index[0]
+
+    mc = mpf.make_marketcolors(up=CHART_UP_COLOR, down=CHART_DOWN_COLOR,
+                                edge="inherit", wick="inherit")
+    style = mpf.make_mpf_style(marketcolors=mc, facecolor=CHART_BG_COLOR,
+                                figcolor=CHART_BG_COLOR, gridcolor=CHART_BG_COLOR)
 
     ago_txt = "latest candle" if match["bars_ago"] == 0 else f"{match['bars_ago']} candles ago"
     fig, axlist = mpf.plot(
-        plot_df, type="candle", volume=False, style="charles",
-        title=f"\n{match['symbol']}  ({match['bias'].upper()} - signal {ago_txt})",
+        plot_df, type="candle", volume=False, style=style,
         returnfig=True, figsize=(9, 6),
     )
     ax = axlist[0]
+    ax.set_title(f"{match['symbol']}  ({match['bias'].upper()} - signal {ago_txt})",
+                  color=CHART_TITLE_COLOR, fontsize=13, fontweight="bold", pad=14)
     ax.set_xticks([])
     ax.set_yticks([])
     ax.set_xlabel("")
@@ -467,7 +485,7 @@ def render_chart(match) -> bytes | None:
     if ob_time in plot_df.index:
         x0 = plot_df.index.get_loc(ob_time)
         ax.axhspan(ob.bar_low, ob.bar_high, xmin=max(x0 - 0.5, 0) / len(plot_df),
-                   xmax=1.0, color=ob_color, alpha=0.15)
+                   xmax=1.0, color=ob_color, alpha=CHART_OB_ZONE_ALPHA)
         ax.axhline(ob.bar_high, color=ob_color, lw=0.8, ls="--")
         ax.axhline(ob.bar_low, color=ob_color, lw=0.8, ls="--")
 
@@ -478,19 +496,21 @@ def render_chart(match) -> bytes | None:
         x_break = ob.break_bar_index - window_start_idx
         if 0 <= x_pivot < len(plot_df) and 0 <= x_break < len(plot_df):
             ax.plot([x_pivot, x_break], [ob.break_level, ob.break_level],
-                     color="#787b86", lw=1.0, ls="--")
+                     color=CHART_BOS_CHOCH_COLOR, lw=1.0, ls="--")
             ax.text((x_pivot + x_break) / 2, ob.break_level, ob.tag,
-                     color="#787b86", fontsize=8, ha="center",
+                     color=CHART_BOS_CHOCH_COLOR, fontsize=8, ha="center",
                      va="bottom" if ob.bias == 1 else "top")
 
     # --- vertical marker on the matched signal candle ---
     signal_time = df.index[match["bar_index"]] if match["bar_index"] < len(df) else None
     if signal_time in plot_df.index:
         xs = plot_df.index.get_loc(signal_time)
-        ax.axvline(xs, color="#ffb300", lw=1.2, ls=":")
+        ax.axvline(xs, color=CHART_SIGNAL_LINE_COLOR, lw=1.2, ls=":")
 
+    fig.patch.set_facecolor(CHART_BG_COLOR)
+    ax.set_facecolor(CHART_BG_COLOR)
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=130, bbox_inches="tight")
+    fig.savefig(buf, format="png", dpi=130, bbox_inches="tight", facecolor=CHART_BG_COLOR)
     return buf.getvalue()
 
 
