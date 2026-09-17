@@ -23,7 +23,10 @@ ENV VARS (all optional except none are required to just print to stdout):
   TIMEFRAME            - default "30m"
   CANDLE_LIMIT         - how many candles to fetch per symbol, default 500
   SIGNAL_LOOKBACK      - how many recent closed candles to scan for a
-                          qualifying signal candle, default 20
+                          qualifying signal candle, default 10
+  REQUIRE_FRESH_OB     - "true"/"false" (default "false") -> if true,
+                          drop matches whose OB zone has already been
+                          retested since its breakout confirmation
   MAX_CONCURRENCY      - concurrent symbol fetches, default 8
   QUOTE                - quote asset filter, default "USDT"
 """
@@ -52,6 +55,7 @@ except ImportError:
 TIMEFRAME       = os.environ.get("TIMEFRAME", "30m")
 CANDLE_LIMIT    = int(os.environ.get("CANDLE_LIMIT", "500"))
 SIGNAL_LOOKBACK = int(os.environ.get("SIGNAL_LOOKBACK", "15"))  # how many recent closed candles to scan
+REQUIRE_FRESH_OB = os.environ.get("REQUIRE_FRESH_OB", "false").lower() == "true"  # only keep untested OBs
 MAX_CONCURRENCY = int(os.environ.get("MAX_CONCURRENCY", "8"))
 QUOTE           = os.environ.get("QUOTE", "USDT")
 GENERATE_CHARTS = os.environ.get("GENERATE_CHARTS", "true").lower() == "true"
@@ -327,6 +331,23 @@ def compute_swing_labels(df: pd.DataFrame, lb=PIVOT_LB, rb=PIVOT_RB):
 # ---------------------------------------------------------------------------
 # MATCHING
 # ---------------------------------------------------------------------------
+def is_ob_fresh(high: np.ndarray, low: np.ndarray, ob: "OrderBlock", last_i: int) -> bool:
+    """
+    "Fresh" = since the candle that confirmed the break (ob.break_bar_index),
+    price has NOT come back and touched the OB zone [bar_low, bar_high]
+    again. A bullish OB is touched if a later candle's low dips back down
+    into the zone; a bearish OB is touched if a later candle's high pokes
+    back up into the zone.
+    """
+    start = ob.break_bar_index + 1
+    if start > last_i:
+        return True  # no candles yet since the break - nothing could have touched it
+    if ob.bias == 1:
+        return not bool((low[start:last_i + 1] <= ob.bar_high).any())
+    else:
+        return not bool((high[start:last_i + 1] >= ob.bar_low).any())
+
+
 def evaluate_symbol(df: pd.DataFrame):
     """
     Looks at every internal OB that is still ACTIVE (unmitigated) as of
@@ -334,7 +355,12 @@ def evaluate_symbol(df: pd.DataFrame):
     exact candle it was built from) to ALSO be the exact candle of a
     same-direction swing label (LL/HL for a bullish OB, HH/LH for a
     bearish OB) - not just nearby, the same bar_index - and that candle
-    must fall within the last SIGNAL_LOOKBACK closed candles (default 10).
+    must fall within the last SIGNAL_LOOKBACK closed candles (default 15).
+
+    Each match also carries "fresh": True/False - whether the OB zone has
+    been left untouched since its breakout confirmation candle (see
+    is_ob_fresh). If REQUIRE_FRESH_OB is set, non-fresh matches are
+    dropped entirely instead of just being labeled.
     """
     n = len(df)
     last_i = n - 1  # last CLOSED candle (caller must have already dropped
@@ -342,6 +368,8 @@ def evaluate_symbol(df: pd.DataFrame):
 
     final_obs, _ = compute_internal_order_blocks(df)
     swings = compute_swing_labels(df)
+    high = df["high"].to_numpy()
+    low = df["low"].to_numpy()
 
     swing_labels_by_bar = {}
     for s in swings:
@@ -359,12 +387,22 @@ def evaluate_symbol(df: pd.DataFrame):
         # pivot: LL or HL. A bearish OB candle is the HIGHEST point in
         # its leg (argmax parsedHigh), landing on a HIGH-type pivot:
         # HH or LH.
+        matched_bias = None
+        matched_labels = None
         if ob.bias == 1 and labels_here & {"LL", "HL"}:
-            all_signals.append({"bar_index": ob.bar_index, "bias": "bullish", "ob": ob,
-                                 "matched_labels": sorted(labels_here & {"LL", "HL"})})
+            matched_bias, matched_labels = "bullish", sorted(labels_here & {"LL", "HL"})
         elif ob.bias == -1 and labels_here & {"HH", "LH"}:
-            all_signals.append({"bar_index": ob.bar_index, "bias": "bearish", "ob": ob,
-                                 "matched_labels": sorted(labels_here & {"HH", "LH"})})
+            matched_bias, matched_labels = "bearish", sorted(labels_here & {"HH", "LH"})
+
+        if matched_bias is None:
+            continue
+
+        fresh = is_ob_fresh(high, low, ob, last_i)
+        if REQUIRE_FRESH_OB and not fresh:
+            continue
+
+        all_signals.append({"bar_index": ob.bar_index, "bias": matched_bias, "ob": ob,
+                             "matched_labels": matched_labels, "fresh": fresh})
 
     if not all_signals:
         return None
@@ -467,12 +505,13 @@ def render_chart(match) -> bytes | None:
                                 figcolor=CHART_BG_COLOR, gridcolor=CHART_BG_COLOR)
 
     ago_txt = "latest candle" if match["bars_ago"] == 0 else f"{match['bars_ago']} candles ago"
+    fresh_txt = " - FRESH OB" if match["fresh"] else " - retested OB"
     fig, axlist = mpf.plot(
         plot_df, type="candle", volume=False, style=style,
         returnfig=True, figsize=(9, 6),
     )
     ax = axlist[0]
-    ax.set_title(f"{match['symbol']}  ({match['bias'].upper()} - signal {ago_txt})",
+    ax.set_title(f"{match['symbol']}  ({match['bias'].upper()} - signal {ago_txt}{fresh_txt})",
                   color=CHART_TITLE_COLOR, fontsize=13, fontweight="bold", pad=14)
     ax.set_xticks([])
     ax.set_yticks([])
@@ -537,7 +576,8 @@ def send_telegram_photo(png_bytes, caption):
 def format_result_line(m):
     arrow = "🟢" if m["bias"] == "bullish" else "🔴"
     ago = "latest candle" if m["bars_ago"] == 0 else f"{m['bars_ago']} candles ago"
-    return (f"{arrow} <b>{m['symbol']}</b> - {m['bias']} ({ago}) | "
+    fresh_tag = " 🆕fresh" if m["fresh"] else ""
+    return (f"{arrow} <b>{m['symbol']}</b> - {m['bias']} ({ago}){fresh_tag} | "
             f"OB {m['ob'].bar_low:.4f}-{m['ob'].bar_high:.4f} | "
             f"swing: {','.join(m['matched_labels'])} | "
             f"price now {m['last_price']:.4f}")
