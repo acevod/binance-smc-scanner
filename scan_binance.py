@@ -34,6 +34,13 @@ ENV VARS (all optional except none are required to just print to stdout):
   QUOTE                - quote asset filter, default "USDT"
   API_TIMEOUT_MS       - ccxt request timeout in ms, default 30000 (raise
                           this if you keep seeing RequestTimeout errors)
+  CONFIRM_TIMEFRAMES   - comma-separated timeframes (default "15m,1h") ->
+                          a 30m match must ALSO show the same setup (same
+                          bias) on at least one of these before it counts.
+                          Only checked for pairs that already matched on
+                          TIMEFRAME, so it's cheap. Set to "" to disable.
+  CONFIRM_MODE         - "any" (default) or "all" -> whether ONE or ALL of
+                          CONFIRM_TIMEFRAMES must also confirm
 """
 
 import asyncio
@@ -65,6 +72,14 @@ MIN_CANDLES_BEYOND_OB = int(os.environ.get("MIN_CANDLES_BEYOND_OB", "5"))  # min
 MAX_CONCURRENCY = int(os.environ.get("MAX_CONCURRENCY", "8"))
 QUOTE           = os.environ.get("QUOTE", "USDT")
 GENERATE_CHARTS = os.environ.get("GENERATE_CHARTS", "true").lower() == "true"
+
+# Multi-timeframe confirmation: after a pair matches on TIMEFRAME (30m),
+# also require the SAME setup (OB + swing, same bias) on at least one of
+# these other timeframes before it counts as confirmed. Only applied to
+# pairs that already matched on 30m, so it's cheap - a couple of extra
+# fetches for a handful of candidates, not for all ~300 pairs.
+CONFIRM_TIMEFRAMES = [tf.strip() for tf in os.environ.get("CONFIRM_TIMEFRAMES", "15m,1h").split(",") if tf.strip()]
+CONFIRM_MODE = os.environ.get("CONFIRM_MODE", "any").lower()  # "any" or "all" of CONFIRM_TIMEFRAMES
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID")
@@ -479,30 +494,60 @@ async def fetch_symbols(exchange):
     return sorted(symbols)
 
 
+async def fetch_ohlcv_df(exchange, symbol, timeframe):
+    """Fetch OHLCV with retry, return a DataFrame with the forming candle
+    dropped, or None if it couldn't be fetched / isn't enough history."""
+    ohlcv = None
+    for attempt in range(3):
+        try:
+            ohlcv = await exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=CANDLE_LIMIT)
+            break
+        except Exception:
+            if attempt == 2:
+                return None
+            await asyncio.sleep(1.5 * (attempt + 1))
+    if ohlcv is None or len(ohlcv) < max(SWING_LEN, ATR_LEN) + 20:
+        return None
+    df = pd.DataFrame(ohlcv, columns=["ts", "open", "high", "low", "close", "volume"])
+    return df.iloc[:-1]  # drop currently-forming candle
+
+
 async def fetch_and_evaluate(exchange, symbol, sem):
     async with sem:
-        for attempt in range(3):
-            try:
-                ohlcv = await exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=CANDLE_LIMIT)
-                break
-            except Exception:
-                if attempt == 2:
-                    return None
-                await asyncio.sleep(1.5 * (attempt + 1))
-        if len(ohlcv) < max(SWING_LEN, ATR_LEN) + 20:
+        df = await fetch_ohlcv_df(exchange, symbol, TIMEFRAME)
+        if df is None:
             return None
-        df = pd.DataFrame(ohlcv, columns=["ts", "open", "high", "low", "close", "volume"])
-        df = df.iloc[:-1]  # drop currently-forming candle
         try:
             match = evaluate_symbol(df)
         except Exception:
             traceback.print_exc()
             return None
-        if match:
-            match["symbol"] = symbol
-            match["df"] = df
-            match["last_price"] = df["close"].iloc[-1]
-            match["last_time"] = pd.to_datetime(df["ts"].iloc[-1], unit="ms", utc=True)
+        if not match:
+            return None
+
+        # --- multi-timeframe confirmation (only runs for candidates that
+        # already matched on TIMEFRAME, so this stays cheap) ---
+        if CONFIRM_TIMEFRAMES:
+            confirmed_on = []
+            for tf in CONFIRM_TIMEFRAMES:
+                cdf = await fetch_ohlcv_df(exchange, symbol, tf)
+                if cdf is None:
+                    continue
+                try:
+                    cmatch = evaluate_symbol(cdf)
+                except Exception:
+                    continue
+                if cmatch and cmatch["bias"] == match["bias"]:
+                    confirmed_on.append(tf)
+            ok = (len(confirmed_on) == len(CONFIRM_TIMEFRAMES)) if CONFIRM_MODE == "all" else len(confirmed_on) > 0
+            if not ok:
+                return None
+            match["confirmed_on"] = confirmed_on
+
+        match["symbol"] = symbol
+        match["df"] = df
+        match["last_price"] = df["close"].iloc[-1]
+        match["last_time"] = pd.to_datetime(df["ts"].iloc[-1], unit="ms", utc=True)
         return match
 
 
@@ -623,7 +668,8 @@ def format_result_line(m):
     arrow = "🟢" if m["bias"] == "bullish" else "🔴"
     ago = "latest candle" if m["bars_ago"] == 0 else f"{m['bars_ago']} candles ago"
     fresh_tag = " 🆕fresh" if m["fresh"] else ""
-    return (f"{arrow} <b>{m['symbol']}</b> - {m['bias']} ({ago}){fresh_tag} | "
+    confirm_tag = f" ✅{'/'.join(m['confirmed_on'])}" if m.get("confirmed_on") else ""
+    return (f"{arrow} <b>{m['symbol']}</b> - {m['bias']} ({ago}){fresh_tag}{confirm_tag} | "
             f"OB {m['ob'].bar_low:.4f}-{m['ob'].bar_high:.4f} | "
             f"swing: {','.join(m['matched_labels'])} | "
             f"price now {m['last_price']:.4f}")
