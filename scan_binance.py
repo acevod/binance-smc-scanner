@@ -570,6 +570,7 @@ def main():
             png = render_chart(m)
             if png:
                 send_telegram_photo(png, f"{m['symbol']} - {m['bias']}")
+            time.sleep(1.1)  # stay under Telegram's ~1 msg/sec rate limit
 
 
 if __name__ == "__main__":
