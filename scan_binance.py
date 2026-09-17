@@ -32,6 +32,8 @@ ENV VARS (all optional except none are required to just print to stdout):
                           signal, default 5
   MAX_CONCURRENCY      - concurrent symbol fetches, default 8
   QUOTE                - quote asset filter, default "USDT"
+  API_TIMEOUT_MS       - ccxt request timeout in ms, default 30000 (raise
+                          this if you keep seeing RequestTimeout errors)
 """
 
 import asyncio
@@ -459,7 +461,16 @@ async def fetch_symbols(exchange):
       - quote == USDT AND settle == USDT (excludes USDC-margined pairs)
       - active (still tradeable)
     """
-    markets = await exchange.load_markets()
+    markets = None
+    for attempt in range(5):
+        try:
+            markets = await exchange.load_markets()
+            break
+        except Exception as e:
+            if attempt == 4:
+                raise
+            print(f"load_markets() attempt {attempt + 1} failed ({e!r}), retrying...")
+            await asyncio.sleep(2 * (attempt + 1))
     symbols = [
         m["symbol"] for m in markets.values()
         if m.get("swap") and m.get("linear") and m.get("active")
@@ -496,7 +507,10 @@ async def fetch_and_evaluate(exchange, symbol, sem):
 
 
 async def run_scan():
-    exchange = ccxt.binanceusdm({"enableRateLimit": True})
+    # Default ccxt timeout (10s) is tight for a mobile/Termux connection;
+    # give it more room before giving up on a single request.
+    api_timeout_ms = int(os.environ.get("API_TIMEOUT_MS", "30000"))
+    exchange = ccxt.binanceusdm({"enableRateLimit": True, "timeout": api_timeout_ms})
     try:
         symbols = await fetch_symbols(exchange)
         print(f"Scanning {len(symbols)} {QUOTE} perpetual pairs on {TIMEFRAME}...")
