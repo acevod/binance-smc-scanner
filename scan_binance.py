@@ -23,10 +23,13 @@ ENV VARS (all optional except none are required to just print to stdout):
   TIMEFRAME            - default "30m"
   CANDLE_LIMIT         - how many candles to fetch per symbol, default 500
   SIGNAL_LOOKBACK      - how many recent closed candles to scan for a
-                          qualifying signal candle, default 10
-  REQUIRE_FRESH_OB     - "true"/"false" (default "false") -> if true,
+                          qualifying signal candle, default 20
+  REQUIRE_FRESH_OB     - "true"/"false" (default "true") -> if true,
                           drop matches whose OB zone has already been
-                          retested since its breakout confirmation
+                          retested since its first breakaway close
+  MIN_CANDLES_BEYOND_OB - minimum candles closed beyond the OB zone since
+                          its breakaway close before it counts as a valid
+                          signal, default 5
   MAX_CONCURRENCY      - concurrent symbol fetches, default 8
   QUOTE                - quote asset filter, default "USDT"
 """
@@ -54,8 +57,9 @@ except ImportError:
 # ---------------------------------------------------------------------------
 TIMEFRAME       = os.environ.get("TIMEFRAME", "30m")
 CANDLE_LIMIT    = int(os.environ.get("CANDLE_LIMIT", "500"))
-SIGNAL_LOOKBACK = int(os.environ.get("SIGNAL_LOOKBACK", "15"))  # how many recent closed candles to scan
-REQUIRE_FRESH_OB = os.environ.get("REQUIRE_FRESH_OB", "false").lower() == "true"  # only keep untested OBs
+SIGNAL_LOOKBACK = int(os.environ.get("SIGNAL_LOOKBACK", "20"))  # how many recent closed candles to scan
+REQUIRE_FRESH_OB = os.environ.get("REQUIRE_FRESH_OB", "true").lower() == "true"  # only keep untested OBs
+MIN_CANDLES_BEYOND_OB = int(os.environ.get("MIN_CANDLES_BEYOND_OB", "5"))  # min candles closed beyond the OB since its breakaway close
 MAX_CONCURRENCY = int(os.environ.get("MAX_CONCURRENCY", "8"))
 QUOTE           = os.environ.get("QUOTE", "USDT")
 GENERATE_CHARTS = os.environ.get("GENERATE_CHARTS", "true").lower() == "true"
@@ -332,7 +336,7 @@ def compute_swing_labels(df: pd.DataFrame, lb=PIVOT_LB, rb=PIVOT_RB):
 # MATCHING
 # ---------------------------------------------------------------------------
 def is_ob_fresh(close: np.ndarray, high: np.ndarray, low: np.ndarray,
-                 ob: "OrderBlock", last_i: int) -> bool:
+                 ob: "OrderBlock", last_i: int):
     """
     "Fresh" = starting from the OB's own candle, find the FIRST later
     candle whose CLOSE already breaks outside the OB zone (close above
@@ -342,6 +346,8 @@ def is_ob_fresh(close: np.ndarray, high: np.ndarray, low: np.ndarray,
     From the candle right after that first breakaway close onward, if ANY
     candle's low/high comes back and touches the zone again, the OB is no
     longer fresh (it's been retested).
+
+    Returns (fresh: bool, first_break_bar_index: int | None).
     """
     first_break = None
     for j in range(ob.bar_index + 1, last_i + 1):
@@ -352,15 +358,16 @@ def is_ob_fresh(close: np.ndarray, high: np.ndarray, low: np.ndarray,
             first_break = j
             break
     if first_break is None:
-        return True  # hasn't even closed outside the zone yet
+        return True, None  # hasn't even closed outside the zone yet
 
     start = first_break + 1
     if start > last_i:
-        return True  # nothing has happened since the breakaway close yet
+        return True, first_break  # nothing has happened since the breakaway close yet
     if ob.bias == 1:
-        return not bool((low[start:last_i + 1] <= ob.bar_high).any())
+        fresh = not bool((low[start:last_i + 1] <= ob.bar_high).any())
     else:
-        return not bool((high[start:last_i + 1] >= ob.bar_low).any())
+        fresh = not bool((high[start:last_i + 1] >= ob.bar_low).any())
+    return fresh, first_break
 
 
 def evaluate_symbol(df: pd.DataFrame):
@@ -370,12 +377,13 @@ def evaluate_symbol(df: pd.DataFrame):
     exact candle it was built from) to ALSO be the exact candle of a
     same-direction swing label (LL/HL for a bullish OB, HH/LH for a
     bearish OB) - not just nearby, the same bar_index - and that candle
-    must fall within the last SIGNAL_LOOKBACK closed candles (default 15).
+    must fall within the last SIGNAL_LOOKBACK closed candles (default 20).
 
     Each match also carries "fresh": True/False - whether the OB zone has
-    been left untouched since its breakout confirmation candle (see
-    is_ob_fresh). If REQUIRE_FRESH_OB is set, non-fresh matches are
-    dropped entirely instead of just being labeled.
+    been left untouched since its first breakaway close (see is_ob_fresh).
+    REQUIRE_FRESH_OB (default true) drops non-fresh matches entirely, and
+    MIN_CANDLES_BEYOND_OB (default 5) requires the breakaway to be at
+    least that many candles old before it counts as a valid signal.
     """
     n = len(df)
     last_i = n - 1  # last CLOSED candle (caller must have already dropped
@@ -413,12 +421,20 @@ def evaluate_symbol(df: pd.DataFrame):
         if matched_bias is None:
             continue
 
-        fresh = is_ob_fresh(close, high, low, ob, last_i)
+        fresh, first_break = is_ob_fresh(close, high, low, ob, last_i)
         if REQUIRE_FRESH_OB and not fresh:
             continue
 
+        # require at least MIN_CANDLES_BEYOND_OB candles closed beyond the
+        # zone since the breakaway close, so we skip OBs that only just
+        # broke away a candle or two ago (not "established" yet)
+        candles_beyond = (last_i - first_break + 1) if first_break is not None else 0
+        if candles_beyond < MIN_CANDLES_BEYOND_OB:
+            continue
+
         all_signals.append({"bar_index": ob.bar_index, "bias": matched_bias, "ob": ob,
-                             "matched_labels": matched_labels, "fresh": fresh})
+                             "matched_labels": matched_labels, "fresh": fresh,
+                             "candles_beyond_ob": candles_beyond})
 
     if not all_signals:
         return None
