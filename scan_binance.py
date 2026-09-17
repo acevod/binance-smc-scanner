@@ -51,7 +51,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 TIMEFRAME       = os.environ.get("TIMEFRAME", "30m")
 CANDLE_LIMIT    = int(os.environ.get("CANDLE_LIMIT", "500"))
-SIGNAL_LOOKBACK = int(os.environ.get("SIGNAL_LOOKBACK", "20"))  # how many recent closed candles to scan
+SIGNAL_LOOKBACK = int(os.environ.get("SIGNAL_LOOKBACK", "10"))  # how many recent closed candles to scan
 MAX_CONCURRENCY = int(os.environ.get("MAX_CONCURRENCY", "8"))
 QUOTE           = os.environ.get("QUOTE", "USDT")
 GENERATE_CHARTS = os.environ.get("GENERATE_CHARTS", "true").lower() == "true"
@@ -320,7 +320,7 @@ def evaluate_symbol(df: pd.DataFrame):
     exact candle it was built from) to ALSO be the exact candle of a
     same-direction swing label (LL/HL for a bullish OB, HH/LH for a
     bearish OB) - not just nearby, the same bar_index - and that candle
-    must fall within the last SIGNAL_LOOKBACK closed candles (default 20).
+    must fall within the last SIGNAL_LOOKBACK closed candles (default 10).
     """
     n = len(df)
     last_i = n - 1  # last CLOSED candle (caller must have already dropped
