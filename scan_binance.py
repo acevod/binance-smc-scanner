@@ -112,6 +112,10 @@ class OrderBlock:
     bar_low: float
     bar_index: int
     bias: int   # +1 bullish, -1 bearish
+    pivot_bar_index: int = -1   # bar the broken structure pivot came from
+    break_bar_index: int = -1   # bar where the break (BOS/CHoCH) confirmed
+    break_level: float = float("nan")  # price level that got broken
+    tag: str = "BOS"            # "BOS" or "CHoCH"
 
 
 def compute_legs(high: np.ndarray, low: np.ndarray, size: int):
@@ -207,6 +211,7 @@ def compute_internal_order_blocks(df: pd.DataFrame):
         if (not np.isnan(internal_high.level) and not internal_high.crossed
                 and close[i - 1] <= internal_high.level < close[i]
                 and internal_high.level != swing_high_level):
+            tag = "CHoCH" if internal_trend_bias == -1 else "BOS"
             internal_high.crossed = True
             internal_trend_bias = 1
             pb = internal_high.bar_index
@@ -215,12 +220,14 @@ def compute_internal_order_blocks(df: pd.DataFrame):
                 idx = pb + int(np.argmin(seg))
                 order_blocks.insert(0, OrderBlock(
                     bar_high=parsed_high[idx], bar_low=parsed_low[idx],
-                    bar_index=idx, bias=1))
+                    bar_index=idx, bias=1, pivot_bar_index=pb,
+                    break_bar_index=i, break_level=internal_high.level, tag=tag))
 
         # --- bearish crossunder of internalLow -> BOS/CHoCH + store OB ---
         if (not np.isnan(internal_low.level) and not internal_low.crossed
                 and close[i - 1] >= internal_low.level > close[i]
                 and internal_low.level != swing_low_level):
+            tag = "CHoCH" if internal_trend_bias == 1 else "BOS"
             internal_low.crossed = True
             internal_trend_bias = -1
             pb = internal_low.bar_index
@@ -229,7 +236,8 @@ def compute_internal_order_blocks(df: pd.DataFrame):
                 idx = pb + int(np.argmax(seg))
                 order_blocks.insert(0, OrderBlock(
                     bar_high=parsed_high[idx], bar_low=parsed_low[idx],
-                    bar_index=idx, bias=-1))
+                    bar_index=idx, bias=-1, pivot_bar_index=pb,
+                    break_bar_index=i, break_level=internal_low.level, tag=tag))
 
         # --- mitigation check every bar (Order Block Mitigation = High/Low) ---
         still_active = []
@@ -429,10 +437,13 @@ def render_chart(match) -> bytes | None:
     except ImportError:
         return None
 
+    CHART_CANDLES = int(os.environ.get("CHART_CANDLES", "50"))
+
     df = match["df"].copy()
     df["date"] = pd.to_datetime(df["ts"], unit="ms", utc=True)
     df = df.set_index("date")
-    plot_df = df.tail(120)[["open", "high", "low", "close", "volume"]]
+    plot_df = df.tail(CHART_CANDLES)[["open", "high", "low", "close", "volume"]]
+    window_start_idx = len(df) - len(plot_df)  # original df index of plot_df's first row
 
     ob = match["ob"]
     ob_color = "#26a69a" if ob.bias == 1 else "#ef5350"
@@ -440,11 +451,19 @@ def render_chart(match) -> bytes | None:
 
     ago_txt = "latest candle" if match["bars_ago"] == 0 else f"{match['bars_ago']} candles ago"
     fig, axlist = mpf.plot(
-        plot_df, type="candle", volume=True, style="charles",
-        title=f"{match['symbol']}  ({match['bias'].upper()} - sinyal {ago_txt})",
+        plot_df, type="candle", volume=False, style="charles",
+        title=f"\n{match['symbol']}  ({match['bias'].upper()} - signal {ago_txt})",
         returnfig=True, figsize=(9, 6),
     )
     ax = axlist[0]
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_xlabel("")
+    ax.set_ylabel("")
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+    # --- OB zone (shaded box + dashed top/bottom lines) ---
     if ob_time in plot_df.index:
         x0 = plot_df.index.get_loc(ob_time)
         ax.axhspan(ob.bar_low, ob.bar_high, xmin=max(x0 - 0.5, 0) / len(plot_df),
@@ -452,6 +471,19 @@ def render_chart(match) -> bytes | None:
         ax.axhline(ob.bar_high, color=ob_color, lw=0.8, ls="--")
         ax.axhline(ob.bar_low, color=ob_color, lw=0.8, ls="--")
 
+    # --- BOS/CHoCH break line: horizontal dashed line from the old pivot
+    # to the candle where price broke through it, plus a small label ---
+    if ob.pivot_bar_index >= window_start_idx and ob.break_bar_index >= window_start_idx:
+        x_pivot = ob.pivot_bar_index - window_start_idx
+        x_break = ob.break_bar_index - window_start_idx
+        if 0 <= x_pivot < len(plot_df) and 0 <= x_break < len(plot_df):
+            ax.plot([x_pivot, x_break], [ob.break_level, ob.break_level],
+                     color="#787b86", lw=1.0, ls="--")
+            ax.text((x_pivot + x_break) / 2, ob.break_level, ob.tag,
+                     color="#787b86", fontsize=8, ha="center",
+                     va="bottom" if ob.bias == 1 else "top")
+
+    # --- vertical marker on the matched signal candle ---
     signal_time = df.index[match["bar_index"]] if match["bar_index"] < len(df) else None
     if signal_time in plot_df.index:
         xs = plot_df.index.get_loc(signal_time)
