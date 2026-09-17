@@ -331,17 +331,32 @@ def compute_swing_labels(df: pd.DataFrame, lb=PIVOT_LB, rb=PIVOT_RB):
 # ---------------------------------------------------------------------------
 # MATCHING
 # ---------------------------------------------------------------------------
-def is_ob_fresh(high: np.ndarray, low: np.ndarray, ob: "OrderBlock", last_i: int) -> bool:
+def is_ob_fresh(close: np.ndarray, high: np.ndarray, low: np.ndarray,
+                 ob: "OrderBlock", last_i: int) -> bool:
     """
-    "Fresh" = since the candle that confirmed the break (ob.break_bar_index),
-    price has NOT come back and touched the OB zone [bar_low, bar_high]
-    again. A bullish OB is touched if a later candle's low dips back down
-    into the zone; a bearish OB is touched if a later candle's high pokes
-    back up into the zone.
+    "Fresh" = starting from the OB's own candle, find the FIRST later
+    candle whose CLOSE already breaks outside the OB zone (close above
+    bar_high for a bullish OB, below bar_low for a bearish OB) - this can
+    happen well before the formal internal-structure BOS/CHoCH level is
+    broken, since that level sits further away than the OB zone itself.
+    From the candle right after that first breakaway close onward, if ANY
+    candle's low/high comes back and touches the zone again, the OB is no
+    longer fresh (it's been retested).
     """
-    start = ob.break_bar_index + 1
+    first_break = None
+    for j in range(ob.bar_index + 1, last_i + 1):
+        if ob.bias == 1 and close[j] > ob.bar_high:
+            first_break = j
+            break
+        if ob.bias == -1 and close[j] < ob.bar_low:
+            first_break = j
+            break
+    if first_break is None:
+        return True  # hasn't even closed outside the zone yet
+
+    start = first_break + 1
     if start > last_i:
-        return True  # no candles yet since the break - nothing could have touched it
+        return True  # nothing has happened since the breakaway close yet
     if ob.bias == 1:
         return not bool((low[start:last_i + 1] <= ob.bar_high).any())
     else:
@@ -368,6 +383,7 @@ def evaluate_symbol(df: pd.DataFrame):
 
     final_obs, _ = compute_internal_order_blocks(df)
     swings = compute_swing_labels(df)
+    close = df["close"].to_numpy()
     high = df["high"].to_numpy()
     low = df["low"].to_numpy()
 
@@ -397,7 +413,7 @@ def evaluate_symbol(df: pd.DataFrame):
         if matched_bias is None:
             continue
 
-        fresh = is_ob_fresh(high, low, ob, last_i)
+        fresh = is_ob_fresh(close, high, low, ob, last_i)
         if REQUIRE_FRESH_OB and not fresh:
             continue
 
