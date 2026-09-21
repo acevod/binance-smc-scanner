@@ -44,6 +44,9 @@ ENV VARS (all optional except none are required to just print to stdout):
   REQUIRE_FVG          - "true"/"false" (default "true") -> require a
                           fresh 3-candle Fair Value Gap around the OB's
                           breakaway close (see find_fvg)
+  REQUIRE_UNBROKEN_SWING - "true"/"false" (default "true") -> require a
+                          still-unbroken local extreme after the formal
+                          BOS/CHoCH break (see find_unbroken_swing_after_bos)
 """
 
 import asyncio
@@ -73,6 +76,7 @@ SIGNAL_LOOKBACK = int(os.environ.get("SIGNAL_LOOKBACK", "20"))  # how many recen
 REQUIRE_FRESH_OB = os.environ.get("REQUIRE_FRESH_OB", "true").lower() == "true"  # only keep untested OBs
 MIN_CANDLES_BEYOND_OB = int(os.environ.get("MIN_CANDLES_BEYOND_OB", "5"))  # min candles closed beyond the OB since its breakaway close
 REQUIRE_FVG = os.environ.get("REQUIRE_FVG", "true").lower() == "true"  # require a fresh 3-candle FVG at the breakaway
+REQUIRE_UNBROKEN_SWING = os.environ.get("REQUIRE_UNBROKEN_SWING", "true").lower() == "true"  # require a still-unbroken local extreme after the BOS/CHoCH
 MAX_CONCURRENCY = int(os.environ.get("MAX_CONCURRENCY", "8"))
 QUOTE           = os.environ.get("QUOTE", "USDT")
 GENERATE_CHARTS = os.environ.get("GENERATE_CHARTS", "true").lower() == "true"
@@ -103,6 +107,7 @@ CHART_SIGNAL_LINE_COLOR  = "#ffca28"   # vertical dotted line on the signal cand
 CHART_TITLE_COLOR        = "#d1d4dc"   # title text color
 CHART_FVG_COLOR          = "#7e57c2"   # fair value gap zone (box + border lines)
 CHART_FVG_ZONE_ALPHA     = 0.18        # FVG box fill opacity (0-1)
+CHART_UNBROKEN_SWING_COLOR = "#26c6da" # unbroken local extreme marker line
 
 # --- fixed indicator defaults (match the user's TradingView settings) ---
 INTERNAL_LEN = 5      # LuxAlgo internal structure length (fixed in the script)
@@ -430,6 +435,45 @@ def find_fvg(high: np.ndarray, low: np.ndarray, bias: int, first_break: int, las
             "c1": c1, "c2": first_break, "c3": c3}
 
 
+def find_unbroken_swing_after_bos(close: np.ndarray, high: np.ndarray, low: np.ndarray,
+                                   bias: int, break_bar_index, last_i: int):
+    """
+    Starting at the formal internal-structure BOS/CHoCH break candle
+    (ob.break_bar_index), walk forward through the "break chain": each
+    next candle must break the previous one to keep extending the chain -
+    "break" here means the CLOSE trades beyond the previous candle's high
+    (bullish) or low (bearish); a wick alone doesn't count, only a close
+    beyond it does. The chain stops at the first candle whose close fails
+    to break the current one - that candle is the most recent local
+    extreme of the impulse.
+
+    That candle only counts if it has stayed unbroken ever since (no
+    later candle's CLOSE has gone beyond its high/low - wicks past it
+    still don't count as breaking it). Returns its bar index if so, else
+    None (either no such candle exists yet, or it's since been broken).
+    """
+    r = break_bar_index
+    if r is None or r > last_i:
+        return None
+    i = r
+    while i < last_i:
+        nxt = i + 1
+        broke = (close[nxt] > high[i]) if bias == 1 else (close[nxt] < low[i])
+        if not broke:
+            break
+        i = nxt
+    n = i
+
+    start_check = n + 1
+    if start_check > last_i:
+        return n  # nothing has happened since n yet
+    if bias == 1:
+        unbroken = not bool((close[start_check:last_i + 1] > high[n]).any())
+    else:
+        unbroken = not bool((close[start_check:last_i + 1] < low[n]).any())
+    return n if unbroken else None
+
+
 def evaluate_symbol(df: pd.DataFrame):
     """
     Looks at every internal OB that is still ACTIVE (unmitigated) as of
@@ -448,6 +492,10 @@ def evaluate_symbol(df: pd.DataFrame):
     REQUIRE_FVG (default true) additionally requires a 3-candle Fair
     Value Gap around the breakaway (see find_fvg) that is itself still
     fresh (unfilled) - matches without one are dropped.
+
+    REQUIRE_UNBROKEN_SWING (default true) additionally requires a still-
+    unbroken local extreme after the formal BOS/CHoCH break (see
+    find_unbroken_swing_after_bos) - matches without one are dropped.
     """
     n = len(df)
     last_i = n - 1  # last CLOSED candle (caller must have already dropped
@@ -500,9 +548,18 @@ def evaluate_symbol(df: pd.DataFrame):
         if REQUIRE_FVG and not (fvg and fvg["fresh"]):
             continue
 
+        unbroken_swing_bar = find_unbroken_swing_after_bos(close, high, low, ob.bias, ob.break_bar_index, last_i)
+        unbroken_swing_price = None
+        if unbroken_swing_bar is not None:
+            unbroken_swing_price = high[unbroken_swing_bar] if ob.bias == 1 else low[unbroken_swing_bar]
+        if REQUIRE_UNBROKEN_SWING and unbroken_swing_bar is None:
+            continue
+
         all_signals.append({"bar_index": ob.bar_index, "bias": matched_bias, "ob": ob,
                              "matched_labels": matched_labels, "fresh": fresh,
-                             "candles_beyond_ob": candles_beyond, "fvg": fvg})
+                             "candles_beyond_ob": candles_beyond, "fvg": fvg,
+                             "unbroken_swing_bar": unbroken_swing_bar,
+                             "unbroken_swing_price": unbroken_swing_price})
 
     if not all_signals:
         return None
@@ -694,6 +751,18 @@ def render_chart(match) -> bytes | None:
             ax.text(len(plot_df) - 1, (fvg["low"] + fvg["high"]) / 2, "FVG",
                      color=CHART_FVG_COLOR, fontsize=8, ha="right", va="center")
 
+    # --- unbroken swing marker: thin line from that candle to the right
+    # edge at its high/low, showing the still-unbroken local extreme ---
+    swing_bar = match.get("unbroken_swing_bar")
+    if swing_bar is not None:
+        xs_bar = swing_bar - window_start_idx
+        if 0 <= xs_bar < len(plot_df):
+            level = match["unbroken_swing_price"]
+            ax.plot([xs_bar, len(plot_df) - 1], [level, level],
+                     color=CHART_UNBROKEN_SWING_COLOR, lw=0.9, ls="-.")
+            ax.text(xs_bar, level, " unbroken", color=CHART_UNBROKEN_SWING_COLOR,
+                     fontsize=7, ha="left", va="bottom" if match["bias"] == "bullish" else "top")
+
     # --- vertical marker on the matched signal candle ---
     signal_time = df.index[match["bar_index"]] if match["bar_index"] < len(df) else None
     if signal_time in plot_df.index:
@@ -735,9 +804,12 @@ def format_result_line(m):
     fvg_tag = ""
     if m.get("fvg"):
         fvg_tag = f" | FVG {m['fvg']['low']:.4f}-{m['fvg']['high']:.4f}"
+    swing_tag = ""
+    if m.get("unbroken_swing_price") is not None:
+        swing_tag = f" | unbroken {m['unbroken_swing_price']:.4f}"
     return (f"{arrow} <b>{m['symbol']}</b> - {m['bias']} ({ago}){fresh_tag}{confirm_tag} | "
             f"OB {m['ob'].bar_low:.4f}-{m['ob'].bar_high:.4f} | "
-            f"swing: {','.join(m['matched_labels'])}{fvg_tag} | "
+            f"swing: {','.join(m['matched_labels'])}{fvg_tag}{swing_tag} | "
             f"price now {m['last_price']:.4f}")
 
 
