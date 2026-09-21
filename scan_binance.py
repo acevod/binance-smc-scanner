@@ -41,6 +41,9 @@ ENV VARS (all optional except none are required to just print to stdout):
                           TIMEFRAME, so it's cheap. Set to "" to disable.
   CONFIRM_MODE         - "any" (default) or "all" -> whether ONE or ALL of
                           CONFIRM_TIMEFRAMES must also confirm
+  REQUIRE_FVG          - "true"/"false" (default "true") -> require a
+                          fresh 3-candle Fair Value Gap around the OB's
+                          breakaway close (see find_fvg)
 """
 
 import asyncio
@@ -69,6 +72,7 @@ CANDLE_LIMIT    = int(os.environ.get("CANDLE_LIMIT", "500"))
 SIGNAL_LOOKBACK = int(os.environ.get("SIGNAL_LOOKBACK", "20"))  # how many recent closed candles to scan
 REQUIRE_FRESH_OB = os.environ.get("REQUIRE_FRESH_OB", "true").lower() == "true"  # only keep untested OBs
 MIN_CANDLES_BEYOND_OB = int(os.environ.get("MIN_CANDLES_BEYOND_OB", "5"))  # min candles closed beyond the OB since its breakaway close
+REQUIRE_FVG = os.environ.get("REQUIRE_FVG", "true").lower() == "true"  # require a fresh 3-candle FVG at the breakaway
 MAX_CONCURRENCY = int(os.environ.get("MAX_CONCURRENCY", "8"))
 QUOTE           = os.environ.get("QUOTE", "USDT")
 GENERATE_CHARTS = os.environ.get("GENERATE_CHARTS", "true").lower() == "true"
@@ -97,6 +101,8 @@ CHART_OB_ZONE_ALPHA      = 0.15        # OB box fill opacity (0-1)
 CHART_BOS_CHOCH_COLOR    = "#9598a1"   # BOS/CHoCH dashed line + label
 CHART_SIGNAL_LINE_COLOR  = "#ffca28"   # vertical dotted line on the signal candle
 CHART_TITLE_COLOR        = "#d1d4dc"   # title text color
+CHART_FVG_COLOR          = "#7e57c2"   # fair value gap zone (box + border lines)
+CHART_FVG_ZONE_ALPHA     = 0.18        # FVG box fill opacity (0-1)
 
 # --- fixed indicator defaults (match the user's TradingView settings) ---
 INTERNAL_LEN = 5      # LuxAlgo internal structure length (fixed in the script)
@@ -387,6 +393,43 @@ def is_ob_fresh(close: np.ndarray, high: np.ndarray, low: np.ndarray,
     return fresh, first_break
 
 
+def find_fvg(high: np.ndarray, low: np.ndarray, bias: int, first_break: int, last_i: int):
+    """
+    Classic 3-candle Fair Value Gap anchored on the OB's breakaway:
+      candle1 = first_break - 1  (still inside the OB zone)
+      candle2 = first_break      (closes outside the zone - displacement candle)
+      candle3 = first_break + 1
+    A bullish FVG exists when candle3's low is above candle1's high (a gap
+    price never traded through); a bearish FVG is the mirror image.
+
+    Returns a dict {low, high, fresh} if a gap exists, else None. "fresh"
+    means no candle since candle3 has come back and traded into the gap.
+    """
+    c1 = first_break - 1
+    c3 = first_break + 1
+    if c1 < 0 or c3 > last_i:
+        return None
+
+    if bias == 1:
+        gap_low, gap_high = high[c1], low[c3]
+    else:
+        gap_low, gap_high = high[c3], low[c1]
+
+    if gap_high <= gap_low:
+        return None  # candles overlap - no gap, no FVG
+
+    start = c3 + 1
+    if start > last_i:
+        fresh = True
+    elif bias == 1:
+        fresh = not bool((low[start:last_i + 1] <= gap_high).any())
+    else:
+        fresh = not bool((high[start:last_i + 1] >= gap_low).any())
+
+    return {"low": gap_low, "high": gap_high, "fresh": fresh,
+            "c1": c1, "c2": first_break, "c3": c3}
+
+
 def evaluate_symbol(df: pd.DataFrame):
     """
     Looks at every internal OB that is still ACTIVE (unmitigated) as of
@@ -401,6 +444,10 @@ def evaluate_symbol(df: pd.DataFrame):
     REQUIRE_FRESH_OB (default true) drops non-fresh matches entirely, and
     MIN_CANDLES_BEYOND_OB (default 5) requires the breakaway to be at
     least that many candles old before it counts as a valid signal.
+
+    REQUIRE_FVG (default true) additionally requires a 3-candle Fair
+    Value Gap around the breakaway (see find_fvg) that is itself still
+    fresh (unfilled) - matches without one are dropped.
     """
     n = len(df)
     last_i = n - 1  # last CLOSED candle (caller must have already dropped
@@ -449,9 +496,13 @@ def evaluate_symbol(df: pd.DataFrame):
         if candles_beyond < MIN_CANDLES_BEYOND_OB:
             continue
 
+        fvg = find_fvg(high, low, ob.bias, first_break, last_i) if first_break is not None else None
+        if REQUIRE_FVG and not (fvg and fvg["fresh"]):
+            continue
+
         all_signals.append({"bar_index": ob.bar_index, "bias": matched_bias, "ob": ob,
                              "matched_labels": matched_labels, "fresh": fresh,
-                             "candles_beyond_ob": candles_beyond})
+                             "candles_beyond_ob": candles_beyond, "fvg": fvg})
 
     if not all_signals:
         return None
@@ -631,6 +682,18 @@ def render_chart(match) -> bytes | None:
                      color=CHART_BOS_CHOCH_COLOR, fontsize=8, ha="center",
                      va="bottom" if ob.bias == 1 else "top")
 
+    # --- FVG zone (shaded box, spanning from candle1 to the right edge) ---
+    fvg = match.get("fvg")
+    if fvg:
+        fvg_c1 = fvg["c1"] - window_start_idx
+        if 0 <= fvg_c1 < len(plot_df):
+            ax.axhspan(fvg["low"], fvg["high"], xmin=max(fvg_c1 - 0.5, 0) / len(plot_df),
+                       xmax=1.0, color=CHART_FVG_COLOR, alpha=CHART_FVG_ZONE_ALPHA)
+            ax.axhline(fvg["high"], color=CHART_FVG_COLOR, lw=0.7, ls=":")
+            ax.axhline(fvg["low"], color=CHART_FVG_COLOR, lw=0.7, ls=":")
+            ax.text(len(plot_df) - 1, (fvg["low"] + fvg["high"]) / 2, "FVG",
+                     color=CHART_FVG_COLOR, fontsize=8, ha="right", va="center")
+
     # --- vertical marker on the matched signal candle ---
     signal_time = df.index[match["bar_index"]] if match["bar_index"] < len(df) else None
     if signal_time in plot_df.index:
@@ -669,9 +732,12 @@ def format_result_line(m):
     ago = "latest candle" if m["bars_ago"] == 0 else f"{m['bars_ago']} candles ago"
     fresh_tag = " 🆕fresh" if m["fresh"] else ""
     confirm_tag = f" ✅{'/'.join(m['confirmed_on'])}" if m.get("confirmed_on") else ""
+    fvg_tag = ""
+    if m.get("fvg"):
+        fvg_tag = f" | FVG {m['fvg']['low']:.4f}-{m['fvg']['high']:.4f}"
     return (f"{arrow} <b>{m['symbol']}</b> - {m['bias']} ({ago}){fresh_tag}{confirm_tag} | "
             f"OB {m['ob'].bar_low:.4f}-{m['ob'].bar_high:.4f} | "
-            f"swing: {','.join(m['matched_labels'])} | "
+            f"swing: {','.join(m['matched_labels'])}{fvg_tag} | "
             f"price now {m['last_price']:.4f}")
 
 
