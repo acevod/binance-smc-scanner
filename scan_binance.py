@@ -23,7 +23,7 @@ ENV VARS (all optional except none are required to just print to stdout):
   TIMEFRAME            - default "30m"
   CANDLE_LIMIT         - how many candles to fetch per symbol, default 500
   SIGNAL_LOOKBACK      - how many recent closed candles to scan for a
-                          qualifying signal candle, default 20
+                          qualifying signal candle, default 50
   REQUIRE_FRESH_OB     - "true"/"false" (default "true") -> if true,
                           drop matches whose OB zone has already been
                           retested since its first breakaway close
@@ -47,6 +47,10 @@ ENV VARS (all optional except none are required to just print to stdout):
   REQUIRE_UNBROKEN_SWING - "true"/"false" (default "true") -> require a
                           still-unbroken local extreme after the formal
                           BOS/CHoCH break (see find_unbroken_swing_after_bos)
+  REQUIRE_NO_OPPOSING_SWING - "true"/"false" (default "true") -> reject the
+                          match if a contradicting swing label (LL/LH for
+                          a bullish setup, HH/HL for bearish) has formed
+                          after the breakaway close
 """
 
 import asyncio
@@ -72,11 +76,12 @@ except ImportError:
 # ---------------------------------------------------------------------------
 TIMEFRAME       = os.environ.get("TIMEFRAME", "30m")
 CANDLE_LIMIT    = int(os.environ.get("CANDLE_LIMIT", "500"))
-SIGNAL_LOOKBACK = int(os.environ.get("SIGNAL_LOOKBACK", "20"))  # how many recent closed candles to scan
+SIGNAL_LOOKBACK = int(os.environ.get("SIGNAL_LOOKBACK", "50"))  # how many recent closed candles to scan
 REQUIRE_FRESH_OB = os.environ.get("REQUIRE_FRESH_OB", "true").lower() == "true"  # only keep untested OBs
 MIN_CANDLES_BEYOND_OB = int(os.environ.get("MIN_CANDLES_BEYOND_OB", "5"))  # min candles closed beyond the OB since its breakaway close
 REQUIRE_FVG = os.environ.get("REQUIRE_FVG", "true").lower() == "true"  # require a fresh 3-candle FVG at the breakaway
 REQUIRE_UNBROKEN_SWING = os.environ.get("REQUIRE_UNBROKEN_SWING", "true").lower() == "true"  # require a still-unbroken local extreme after the BOS/CHoCH
+REQUIRE_NO_OPPOSING_SWING = os.environ.get("REQUIRE_NO_OPPOSING_SWING", "true").lower() == "true"  # no contradicting swing labels after the breakaway close
 MAX_CONCURRENCY = int(os.environ.get("MAX_CONCURRENCY", "8"))
 QUOTE           = os.environ.get("QUOTE", "USDT")
 GENERATE_CHARTS = os.environ.get("GENERATE_CHARTS", "true").lower() == "true"
@@ -474,6 +479,22 @@ def find_unbroken_swing_after_bos(close: np.ndarray, high: np.ndarray, low: np.n
     return n if unbroken else None
 
 
+def has_opposing_swing_after(swings: list, bias: int, after_bar: int, last_i: int) -> bool:
+    """
+    True if any CONTRADICTING swing label has formed after the OB's
+    breakaway close (after_bar = first_break). A bullish setup should not
+    see a fresh LL or LH (down-trend labels) after it breaks away; a
+    bearish setup should not see a fresh HH or HL (up-trend labels).
+    Only counts labels that are already confirmed as of last_i (their
+    rb-bar confirmation lag has passed), same as everywhere else.
+    """
+    forbidden = {"LL", "LH"} if bias == 1 else {"HH", "HL"}
+    for s in swings:
+        if s["bar_index"] > after_bar and s["confirmed_at"] <= last_i and s["label"] in forbidden:
+            return True
+    return False
+
+
 def evaluate_symbol(df: pd.DataFrame):
     """
     Looks at every internal OB that is still ACTIVE (unmitigated) as of
@@ -481,7 +502,7 @@ def evaluate_symbol(df: pd.DataFrame):
     exact candle it was built from) to ALSO be the exact candle of a
     same-direction swing label (LL/HL for a bullish OB, HH/LH for a
     bearish OB) - not just nearby, the same bar_index - and that candle
-    must fall within the last SIGNAL_LOOKBACK closed candles (default 20).
+    must fall within the last SIGNAL_LOOKBACK closed candles (default 50).
 
     Each match also carries "fresh": True/False - whether the OB zone has
     been left untouched since its first breakaway close (see is_ob_fresh).
@@ -496,6 +517,10 @@ def evaluate_symbol(df: pd.DataFrame):
     REQUIRE_UNBROKEN_SWING (default true) additionally requires a still-
     unbroken local extreme after the formal BOS/CHoCH break (see
     find_unbroken_swing_after_bos) - matches without one are dropped.
+
+    REQUIRE_NO_OPPOSING_SWING (default true) additionally rejects the
+    match if a contradicting swing label has formed after the breakaway
+    close (see has_opposing_swing_after).
     """
     n = len(df)
     last_i = n - 1  # last CLOSED candle (caller must have already dropped
@@ -554,6 +579,10 @@ def evaluate_symbol(df: pd.DataFrame):
             unbroken_swing_price = high[unbroken_swing_bar] if ob.bias == 1 else low[unbroken_swing_bar]
         if REQUIRE_UNBROKEN_SWING and unbroken_swing_bar is None:
             continue
+
+        if REQUIRE_NO_OPPOSING_SWING and first_break is not None:
+            if has_opposing_swing_after(swings, ob.bias, first_break, last_i):
+                continue
 
         all_signals.append({"bar_index": ob.bar_index, "bias": matched_bias, "ob": ob,
                              "matched_labels": matched_labels, "fresh": fresh,
