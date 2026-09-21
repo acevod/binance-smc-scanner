@@ -156,7 +156,7 @@ online).
 ## Tuning
 
 All parameters live at the top of `scan_binance.py`:
-- `SIGNAL_LOOKBACK` (default 20) — how many recent closed candles are
+- `SIGNAL_LOOKBACK` (default 50) — how many recent closed candles are
   scanned for a qualifying signal candle.
 - `GENERATE_CHARTS` — set to `"false"` for text-only results (faster).
 - `REQUIRE_FRESH_OB` (default `true`) — only keep signals whose OB zone
@@ -173,7 +173,7 @@ USDC-margined pairs are excluded too).
 
 ## A note on the "match" definition
 
-> Within the last `SIGNAL_LOOKBACK` candles (default 20), there's a
+> Within the last `SIGNAL_LOOKBACK` candles (default 50), there's a
 > candle that is BOTH the exact candle an active (unmitigated) internal
 > Order Block was built from AND the exact candle of a same-direction
 > swing label (LL/HL for a bullish OB, HH/LH for a bearish OB) from the
