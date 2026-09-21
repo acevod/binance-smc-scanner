@@ -48,9 +48,10 @@ ENV VARS (all optional except none are required to just print to stdout):
                           still-unbroken local extreme after the formal
                           BOS/CHoCH break (see find_unbroken_swing_after_bos)
   REQUIRE_NO_OPPOSING_SWING - "true"/"false" (default "true") -> reject the
-                          match if a contradicting swing label (LL/LH for
-                          a bullish setup, HH/HL for bearish) has formed
-                          after the breakaway close
+                          match if a NEW same-type swing label forms after
+                          the breakaway close (LL/HL for a bullish setup,
+                          HH/LH for bearish - the same types used to
+                          confirm the original signal)
 """
 
 import asyncio
@@ -481,14 +482,16 @@ def find_unbroken_swing_after_bos(close: np.ndarray, high: np.ndarray, low: np.n
 
 def has_opposing_swing_after(swings: list, bias: int, after_bar: int, last_i: int) -> bool:
     """
-    True if any CONTRADICTING swing label has formed after the OB's
-    breakaway close (after_bar = first_break). A bullish setup should not
-    see a fresh LL or LH (down-trend labels) after it breaks away; a
-    bearish setup should not see a fresh HH or HL (up-trend labels).
+    True if a NEW swing label of the SAME type used for the original
+    OB+swing match has formed after the OB's breakaway close
+    (after_bar = first_break). A bullish setup is matched off LL/HL
+    (low-type) pivots, so no fresh LL or HL should appear after the
+    break; a bearish setup is matched off HH/LH (high-type) pivots, so
+    no fresh HH or LH should appear after the break.
     Only counts labels that are already confirmed as of last_i (their
     rb-bar confirmation lag has passed), same as everywhere else.
     """
-    forbidden = {"LL", "LH"} if bias == 1 else {"HH", "HL"}
+    forbidden = {"LL", "HL"} if bias == 1 else {"HH", "LH"}
     for s in swings:
         if s["bar_index"] > after_bar and s["confirmed_at"] <= last_i and s["label"] in forbidden:
             return True
