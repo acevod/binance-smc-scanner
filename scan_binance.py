@@ -710,7 +710,7 @@ def render_chart(match) -> bytes | None:
         returnfig=True, figsize=(9, 6),
     )
     ax = axlist[0]
-    ax.set_title(f"{match['symbol']}  ({match['bias'].upper()} - signal {ago_txt}{fresh_txt})",
+    ax.set_title(f"{display_symbol(match['symbol'])}  ({match['bias'].upper()} - signal {ago_txt}{fresh_txt})",
                   color=CHART_TITLE_COLOR, fontsize=13, fontweight="bold", pad=14)
     ax.set_xticks([])
     ax.set_yticks([])
@@ -796,6 +796,17 @@ def send_telegram_photo(png_bytes, caption):
                   files=files, timeout=30)
 
 
+def display_symbol(symbol: str) -> str:
+    """
+    ccxt's unified symbol for a USDⓈ-M perpetual looks like
+    "C/USDT:USDT" (base/quote:settle). Since every pair here is a
+    perpetual future, show it the way TradingView does instead:
+    "C/USDT.P" - drop the ":settle" part, add a ".P" suffix.
+    """
+    base_quote = symbol.split(":")[0]
+    return f"{base_quote}.P"
+
+
 def format_result_line(m):
     arrow = "🟢" if m["bias"] == "bullish" else "🔴"
     ago = "latest candle" if m["bars_ago"] == 0 else f"{m['bars_ago']} candles ago"
@@ -807,7 +818,7 @@ def format_result_line(m):
     swing_tag = ""
     if m.get("unbroken_swing_price") is not None:
         swing_tag = f" | unbroken {m['unbroken_swing_price']:.4f}"
-    return (f"{arrow} <b>{m['symbol']}</b> - {m['bias']} ({ago}){fresh_tag}{confirm_tag} | "
+    return (f"{arrow} <b>{display_symbol(m['symbol'])}</b> - {m['bias']} ({ago}){fresh_tag}{confirm_tag} | "
             f"OB {m['ob'].bar_low:.4f}-{m['ob'].bar_high:.4f} | "
             f"swing: {','.join(m['matched_labels'])}{fvg_tag}{swing_tag} | "
             f"price now {m['last_price']:.4f}")
@@ -839,7 +850,7 @@ def main():
         for m in results:
             png = render_chart(m)
             if png:
-                send_telegram_photo(png, f"{m['symbol']} - {m['bias']}")
+                send_telegram_photo(png, f"{display_symbol(m['symbol'])} - {m['bias']}")
             time.sleep(1.1)  # stay under Telegram's ~1 msg/sec rate limit
 
 
