@@ -749,13 +749,11 @@ def render_chart(match) -> bytes | None:
     for spine in ax.spines.values():
         spine.set_visible(False)
 
-    # --- OB zone (shaded box + dashed top/bottom lines) ---
+    # --- OB zone (shaded box only, no border lines stretching left) ---
     if ob_time in plot_df.index:
         x0 = plot_df.index.get_loc(ob_time)
         ax.axhspan(ob.bar_low, ob.bar_high, xmin=max(x0 - 0.5, 0) / len(plot_df),
                    xmax=1.0, color=ob_color, alpha=CHART_OB_ZONE_ALPHA)
-        ax.axhline(ob.bar_high, color=ob_color, lw=0.8, ls="--")
-        ax.axhline(ob.bar_low, color=ob_color, lw=0.8, ls="--")
         ax.text(len(plot_df) - 1, (ob.bar_low + ob.bar_high) / 2, "OB",
                  color=ob_color, fontsize=8, ha="right", va="center")
 
@@ -771,15 +769,13 @@ def render_chart(match) -> bytes | None:
                      color=CHART_BOS_CHOCH_COLOR, fontsize=8, ha="center",
                      va="bottom" if ob.bias == 1 else "top")
 
-    # --- FVG zone (shaded box, spanning from candle1 to the right edge) ---
+    # --- FVG zone (shaded box only, spanning from candle1 to the right edge) ---
     fvg = match.get("fvg")
     if fvg:
         fvg_c1 = fvg["c1"] - window_start_idx
         if 0 <= fvg_c1 < len(plot_df):
             ax.axhspan(fvg["low"], fvg["high"], xmin=max(fvg_c1 - 0.5, 0) / len(plot_df),
                        xmax=1.0, color=CHART_FVG_COLOR, alpha=CHART_FVG_ZONE_ALPHA)
-            ax.axhline(fvg["high"], color=CHART_FVG_COLOR, lw=0.7, ls=":")
-            ax.axhline(fvg["low"], color=CHART_FVG_COLOR, lw=0.7, ls=":")
             ax.text(len(plot_df) - 1, (fvg["low"] + fvg["high"]) / 2, "FVG",
                      color=CHART_FVG_COLOR, fontsize=8, ha="right", va="center")
 
