@@ -822,12 +822,28 @@ def render_chart(match) -> bytes | None:
 # ---------------------------------------------------------------------------
 # TELEGRAM OUTPUT
 # ---------------------------------------------------------------------------
-def send_telegram_message(text):
+def send_telegram_message(text, reply_markup=None):
     if not (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID):
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text,
-                              "parse_mode": "HTML"}, timeout=20)
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    requests.post(url, json=payload, timeout=20)
+
+
+def send_timeframe_picker():
+    """Re-show the same tappable timeframe buttons as /start, so another
+    scan can be kicked off right away without retyping /start."""
+    keyboard = {
+        "inline_keyboard": [
+            [{"text": "15m", "callback_data": "scan_15m"},
+             {"text": "30m", "callback_data": "scan_30m"}],
+            [{"text": "1h", "callback_data": "scan_1h"},
+             {"text": "4h", "callback_data": "scan_4h"}],
+        ]
+    }
+    send_telegram_message("Pick a timeframe to scan:", reply_markup=keyboard)
 
 
 def send_telegram_photo(png_bytes, caption):
@@ -877,6 +893,7 @@ def main():
         msg = f"✅ Scan complete ({elapsed:.0f}s). No matching pairs right now."
         print(msg)
         send_telegram_message(msg)
+        send_timeframe_picker()
         return
 
     results.sort(key=lambda m: m["symbol"])
@@ -894,6 +911,8 @@ def main():
                 caption = f"{display_symbol(m['symbol'])} - Binance - {TIMEFRAME} - {m['bias'].capitalize()}"
                 send_telegram_photo(png, caption)
             time.sleep(1.1)  # stay under Telegram's ~1 msg/sec rate limit
+
+    send_timeframe_picker()
 
 
 if __name__ == "__main__":
