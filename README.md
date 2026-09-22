@@ -1,5 +1,10 @@
 # Binance SMC Scanner
 
+[![Binance SMC Scan](https://github.com/acevod/binance-smc-scanner/actions/workflows/scan.yml/badge.svg)](https://github.com/acevod/binance-smc-scanner/actions/workflows/scan.yml)
+![Python](https://img.shields.io/badge/python-3.11%2B-blue)
+![Runner](https://img.shields.io/badge/runner-self--hosted-orange)
+![Timeframes](https://img.shields.io/badge/timeframes-15m%20%7C%2030m%20%7C%201h%20%7C%204h-informational)
+
 Scans every Binance USDT-M perpetual futures pair on a timeframe you pick
 from Telegram, looking for pairs where, within the last N closed candles,
 there's a candle that overlaps an active internal Order Block AND has a
