@@ -735,14 +735,12 @@ def render_chart(match) -> bytes | None:
     style = mpf.make_mpf_style(marketcolors=mc, facecolor=CHART_BG_COLOR,
                                 figcolor=CHART_BG_COLOR, gridcolor=CHART_BG_COLOR)
 
-    ago_txt = "latest candle" if match["bars_ago"] == 0 else f"{match['bars_ago']} candles ago"
-    fresh_txt = " - FRESH OB" if match["fresh"] else " - retested OB"
     fig, axlist = mpf.plot(
         plot_df, type="candle", volume=False, style=style,
         returnfig=True, figsize=(9, 6),
     )
     ax = axlist[0]
-    ax.set_title(f"{display_symbol(match['symbol'])}  ({match['bias'].upper()} - signal {ago_txt}{fresh_txt})",
+    ax.set_title(f"{display_symbol(match['symbol'])} - Binance - {TIMEFRAME} - {match['bias'].capitalize()}",
                   color=CHART_TITLE_COLOR, fontsize=13, fontweight="bold", pad=14)
     ax.set_xticks([])
     ax.set_yticks([])
@@ -758,6 +756,8 @@ def render_chart(match) -> bytes | None:
                    xmax=1.0, color=ob_color, alpha=CHART_OB_ZONE_ALPHA)
         ax.axhline(ob.bar_high, color=ob_color, lw=0.8, ls="--")
         ax.axhline(ob.bar_low, color=ob_color, lw=0.8, ls="--")
+        ax.text(len(plot_df) - 1, (ob.bar_low + ob.bar_high) / 2, "OB",
+                 color=ob_color, fontsize=8, ha="right", va="center")
 
     # --- BOS/CHoCH break line: horizontal dashed line from the old pivot
     # to the candle where price broke through it, plus a small label ---
@@ -795,11 +795,22 @@ def render_chart(match) -> bytes | None:
             ax.text(xs_bar, level, " unbroken", color=CHART_UNBROKEN_SWING_COLOR,
                      fontsize=7, ha="left", va="bottom" if match["bias"] == "bullish" else "top")
 
-    # --- vertical marker on the matched signal candle ---
-    signal_time = df.index[match["bar_index"]] if match["bar_index"] < len(df) else None
+    # --- swing point marker: a dot on the signal candle, with its label
+    # (LL/HL) below the candle since those are low-type pivots, or
+    # (HH/LH) above the candle since those are high-type pivots ---
+    signal_bar = match["bar_index"]
+    signal_time = df.index[signal_bar] if signal_bar < len(df) else None
     if signal_time in plot_df.index:
         xs = plot_df.index.get_loc(signal_time)
-        ax.axvline(xs, color=CHART_SIGNAL_LINE_COLOR, lw=1.2, ls=":")
+        label = match["matched_labels"][0] if match["matched_labels"] else ""
+        is_low_type = label in ("LL", "HL")
+        y = plot_df["low"].iat[xs] if is_low_type else plot_df["high"].iat[xs]
+        ax.plot(xs, y, marker="o", markersize=5, color=CHART_SIGNAL_LINE_COLOR,
+                 markeredgewidth=0, zorder=5)
+        ax.annotate(label, xy=(xs, y), xytext=(0, -9 if is_low_type else 9),
+                     textcoords="offset points", ha="center",
+                     va="top" if is_low_type else "bottom",
+                     color=CHART_SIGNAL_LINE_COLOR, fontsize=8, fontweight="bold")
 
     fig.patch.set_facecolor(CHART_BG_COLOR)
     ax.set_facecolor(CHART_BG_COLOR)
@@ -841,16 +852,14 @@ def display_symbol(symbol: str) -> str:
 
 def format_result_line(m):
     arrow = "🟢" if m["bias"] == "bullish" else "🔴"
-    ago = "latest candle" if m["bars_ago"] == 0 else f"{m['bars_ago']} candles ago"
-    fresh_tag = " 🆕fresh" if m["fresh"] else ""
-    confirm_tag = f" ✅{'/'.join(m['confirmed_on'])}" if m.get("confirmed_on") else ""
+    confirm_tag = f" - synced with {'/'.join(m['confirmed_on'])}" if m.get("confirmed_on") else ""
     fvg_tag = ""
     if m.get("fvg"):
         fvg_tag = f" | FVG {m['fvg']['low']:.4f}-{m['fvg']['high']:.4f}"
     swing_tag = ""
     if m.get("unbroken_swing_price") is not None:
         swing_tag = f" | unbroken {m['unbroken_swing_price']:.4f}"
-    return (f"{arrow} <b>{display_symbol(m['symbol'])}</b> - {m['bias']} ({ago}){fresh_tag}{confirm_tag} | "
+    return (f"{arrow} <b>{display_symbol(m['symbol'])}</b> - {m['bias']}{confirm_tag} | "
             f"OB {m['ob'].bar_low:.4f}-{m['ob'].bar_high:.4f} | "
             f"swing: {','.join(m['matched_labels'])}{fvg_tag}{swing_tag} | "
             f"price now {m['last_price']:.4f}")
@@ -882,7 +891,8 @@ def main():
         for m in results:
             png = render_chart(m)
             if png:
-                send_telegram_photo(png, f"{display_symbol(m['symbol'])} - {m['bias']}")
+                caption = f"{display_symbol(m['symbol'])} - Binance - {TIMEFRAME} - {m['bias'].capitalize()}"
+                send_telegram_photo(png, caption)
             time.sleep(1.1)  # stay under Telegram's ~1 msg/sec rate limit
 
 
