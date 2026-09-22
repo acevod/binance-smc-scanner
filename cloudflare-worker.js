@@ -94,7 +94,7 @@ export default {
 };
 
 async function startScan(env, timeframe) {
-  await sendTelegramMessage(env, `🔍 Scan ${timeframe} dimulai, tunggu beberapa menit...`);
+  await sendTelegramMessage(env, `🔍 Scan ${timeframe} started, give it a few minutes...`);
   await triggerGithubWorkflow(env, timeframe);
 }
 
