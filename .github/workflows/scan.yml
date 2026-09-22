@@ -1,9 +1,16 @@
 name: Binance SMC Scan
 
 on:
-  workflow_dispatch: {}          # manual "Run workflow" button on GitHub
+  workflow_dispatch:                # manual "Run workflow" button on GitHub
+    inputs:
+      timeframe:
+        description: "Timeframe to scan"
+        type: choice
+        options: ["15m", "30m", "1h", "4h"]
+        default: "30m"
   repository_dispatch:
-    types: [telegram-scan]       # triggered remotely by the Cloudflare Worker
+    types: [telegram-scan]          # triggered remotely by the Cloudflare Worker
+                                     # (client_payload.timeframe = "15m"/"30m"/"1h"/"4h")
 
 jobs:
   scan:
@@ -11,9 +18,34 @@ jobs:
     # not GitHub's servers - Binance blocks GitHub's own datacenter IPs.
     # See README.md "Self-hosted runner" section for setup.
     runs-on: self-hosted
-    timeout-minutes: 15
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+
+      - name: Resolve timeframe + its confirmation timeframes
+        run: |
+          TF="${{ github.event.client_payload.timeframe }}"
+          if [ -z "$TF" ]; then
+            TF="${{ github.event.inputs.timeframe }}"
+          fi
+          if [ -z "$TF" ]; then
+            TF="30m"
+          fi
+
+          case "$TF" in
+            15m) CONFIRM="5m,30m" ;;
+            30m) CONFIRM="15m,1h" ;;
+            1h)  CONFIRM="30m,4h" ;;
+            4h)  CONFIRM="1h,1D" ;;
+            *)
+              echo "Unknown timeframe: $TF (expected 15m, 30m, 1h or 4h)"
+              exit 1
+              ;;
+          esac
+
+          echo "Scanning timeframe: $TF (confirm against: $CONFIRM)"
+          echo "TIMEFRAME=$TF" >> "$GITHUB_ENV"
+          echo "CONFIRM_TIMEFRAMES=$CONFIRM" >> "$GITHUB_ENV"
 
       # No actions/setup-python here on purpose: on a self-hosted runner
       # we just use whatever python3 is already installed on the machine
@@ -25,6 +57,7 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TIMEFRAME: "30m"
+          CONFIRM_MODE: "any"
           GENERATE_CHARTS: "true"
+          # TIMEFRAME and CONFIRM_TIMEFRAMES come from the step above via GITHUB_ENV
         run: python3 scan_binance.py
