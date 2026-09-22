@@ -61,3 +61,14 @@ jobs:
           GENERATE_CHARTS: "true"
           # TIMEFRAME and CONFIRM_TIMEFRAMES come from the step above via GITHUB_ENV
         run: python3 scan_binance.py
+
+      # Runs no matter which earlier step failed or if the job was
+      # cancelled - scan_binance.py can only notify Telegram on its own
+      # happy path, so this catches everything else (pip install
+      # failing, a crash, hitting the 45-min timeout, manual cancel).
+      - name: Notify Telegram on failure or cancellation
+        if: failure() || cancelled()
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
+            -d text="⚠️ Scan run #${{ github.run_number }} ${{ job.status }} (timeframe: ${TIMEFRAME:-unknown}). Check GitHub Actions for details."
