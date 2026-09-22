@@ -1,20 +1,23 @@
 # Binance SMC Scanner
 
-Scans every Binance USDT-M perpetual futures pair on the 30m timeframe,
-looking for pairs where, within the last N closed candles, there's a
-candle that overlaps an active internal Order Block AND has a
-same-direction HH/HL/LH/LL swing label on the exact same candle.
+Scans every Binance USDT-M perpetual futures pair on a timeframe you pick
+from Telegram, looking for pairs where, within the last N closed candles,
+there's a candle that overlaps an active internal Order Block AND has a
+same-direction HH/HL/LH/LL swing label on the exact same candle - plus a
+fresh Fair Value Gap, an unbroken local extreme after the BOS/CHoCH, no
+contradicting swing label since, and confirmation on a neighboring
+timeframe.
 
 ## How it works
 
 ```
-You send /scan in Telegram
+You send /start in Telegram, tap a timeframe button (or type /scan30m etc.)
         |
         v
 Cloudflare Worker (receives the Telegram webhook)
         |
         v
-Triggers GitHub Actions (repository_dispatch)
+Triggers GitHub Actions (repository_dispatch, carrying which timeframe)
         |
         v
 scan_binance.py runs on YOUR OWN self-hosted runner
@@ -145,27 +148,67 @@ https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://binance-scanner-relay
 A successful response looks like `{"ok":true,"result":true,...}`.
 
 ### 8. Test it
-Make sure `./run.sh` is running in the Termux Ubuntu shell (step 5),
-then send `/scan` to your bot in Telegram. Within ~1-2 minutes, results
+Make sure `./run.sh` is running in the Termux Ubuntu shell (step 5), then
+send `/start` to your bot in Telegram - you'll get a welcome message with
+four timeframe buttons to tap. Within ~1-2 minutes of tapping one, results
 should land in the chat.
 
 You can also test the workflow directly without Telegram: repo →
-Actions → "Binance SMC Scan" → Run workflow (still needs the runner
-online).
+Actions → "Binance SMC Scan" → Run workflow → pick a timeframe from the
+dropdown (still needs the runner online).
+
+## Commands
+
+- `/start` — shows a welcome message with tappable timeframe buttons
+- `/scan15m` — scan the 15m timeframe (confirms against 5m or 30m)
+- `/scan30m` — scan the 30m timeframe (confirms against 15m or 1h)
+- `/scan1h` — scan the 1h timeframe (confirms against 30m or 4h)
+- `/scan4h` — scan the 4h timeframe (confirms against 1h or 1D)
+
+There's no bare `/scan` anymore - a timeframe always has to be picked,
+either by tapping a button or typing the matching command.
 
 ## Tuning
 
-All parameters live at the top of `scan_binance.py`:
+Most parameters live at the top of `scan_binance.py` as env vars with
+defaults - override them via `scan.yml`'s `env:` block if needed:
 - `SIGNAL_LOOKBACK` (default 50) — how many recent closed candles are
   scanned for a qualifying signal candle.
-- `GENERATE_CHARTS` — set to `"false"` for text-only results (faster).
 - `REQUIRE_FRESH_OB` (default `true`) — only keep signals whose OB zone
   has never been touched again since its first breakaway close.
 - `MIN_CANDLES_BEYOND_OB` (default 5) — the breakaway close has to be
   at least this many candles old before the signal counts as valid.
+- `REQUIRE_FVG` (default `true`) — require a fresh (unfilled) 3-candle
+  Fair Value Gap around the OB's breakaway close.
+- `REQUIRE_UNBROKEN_SWING` (default `true`) — require a still-unbroken
+  local extreme after the formal BOS/CHoCH break.
+- `REQUIRE_NO_OPPOSING_SWING` (default `true`) — reject the match if a
+  new same-type swing label (LL/HL for bullish, HH/LH for bearish) has
+  formed since the breakaway close.
+- `GENERATE_CHARTS` — set to `"false"` for text-only results (faster).
+- `CHART_CANDLES` (default 50) — how many candles are shown in the chart
+  image. Chart colors are further down the same config block
+  (`CHART_BG_COLOR`, `CHART_UP_COLOR`, etc.) if you want to restyle them.
 - `CANDLE_LIMIT` — number of historical candles fetched (needs at least
   ~220 for the 200-period ATR + 50-bar swing warmup; default 500 is
   safe).
+
+**Timeframe + confirmation pairing is NOT set in `scan_binance.py`** —
+it's resolved by the "Resolve timeframe" step in `scan.yml`, which maps
+each `/scanXX` command to its confirmation timeframe(s):
+
+| Command | Scans | Confirms against |
+|---|---|---|
+| `/scan15m` | 15m | 5m or 30m |
+| `/scan30m` | 30m | 15m or 1h |
+| `/scan1h` | 1h | 30m or 4h |
+| `/scan4h` | 4h | 1h or 1D |
+
+`CONFIRM_MODE` is also fixed to `"any"` there (only one of the two needs
+to confirm). To change either the pairing table or `"any"`/`"all"`, edit
+the `case` block and the `Run scanner` step's env in `scan.yml` directly
+— editing `scan_binance.py`'s own `CONFIRM_TIMEFRAMES`/`CONFIRM_MODE`
+defaults has no effect, since the workflow always overrides them.
 
 Pair universe: USD-M futures only (`binanceusdm`, never COIN-M), and
 only pairs where both quote and settle currency are USDT (so
@@ -176,10 +219,15 @@ USDC-margined pairs are excluded too).
 > Within the last `SIGNAL_LOOKBACK` candles (default 50), there's a
 > candle that is BOTH the exact candle an active (unmitigated) internal
 > Order Block was built from AND the exact candle of a same-direction
-> swing label (LL/HL for a bullish OB, HH/LH for a bearish OB) from the
-> HH.pine logic — the two must land on the same bar, not just nearby.
-> If more than one candle in the window qualifies, the most recent one
-> is used as the headline result.
+> swing label (LL/HL for a bullish OB, HH/LH for a bearish OB) — the two
+> must land on the same bar, not just nearby. On top of that: the OB's
+> breakaway close must form a fresh (unfilled) 3-candle Fair Value Gap,
+> the local extreme reached after the BOS/CHoCH break must still be
+> unbroken, no new same-type swing label may have formed since the
+> break, and the same setup must also appear on at least one
+> neighboring timeframe (see the table above). If more than one candle
+> in the window qualifies, the most recent one is used as the headline
+> result.
 
 This is a best-effort port of your two indicators' behavior — worth
 double-checking the first scan's results against your TradingView chart
