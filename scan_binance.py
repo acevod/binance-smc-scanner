@@ -1,7 +1,7 @@
 """
 Binance Futures SMC Scanner
 ============================
-Scans all Binance USDT-M perpetual futures pairs on the 30m timeframe and
+Scans all Binance USDT-M perpetual futures pairs on the 15m/30m/1h/4h timeframe and
 flags pairs where the LATEST CLOSED candle sits inside an active
 (unmitigated) internal Order Block AND has a recent HH/HL/LH/LL swing label
 matching that OB's direction.
