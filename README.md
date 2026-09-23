@@ -155,7 +155,7 @@ A successful response looks like `{"ok":true,"result":true,...}`.
 ### 8. Test it
 Make sure `./run.sh` is running in the Termux Ubuntu shell (step 5), then
 send `/start` to your bot in Telegram - you'll get a welcome message with
-four timeframe buttons to tap. Within ~1-2 minutes of tapping one, results
+four timeframe buttons to tap. Within ~3-5 minutes of tapping one, results
 should land in the chat.
 
 You can also test the workflow directly without Telegram: repo →
