@@ -1,10 +1,15 @@
 """
 Binance Futures SMC Scanner
 ============================
-Scans all Binance USDT-M perpetual futures pairs on the 15m/30m/1h/4h timeframe and
-flags pairs where the LATEST CLOSED candle sits inside an active
-(unmitigated) internal Order Block AND has a recent HH/HL/LH/LL swing label
-matching that OB's direction.
+Scans all Binance USDT-M perpetual futures pairs on a timeframe picked via
+Telegram (/scan15m, /scan30m, /scan1h or /scan4h) and flags pairs where,
+within the last SIGNAL_LOOKBACK closed candles, there's a candle that is
+BOTH the exact candle an active internal Order Block was built from AND
+the exact candle of a same-direction HH/HL/LH/LL swing label - plus a
+fresh Fair Value Gap at the breakaway, a still-unbroken local extreme
+after the BOS/CHoCH, no contradicting swing label since, and the same
+setup confirmed on a neighboring timeframe. See evaluate_symbol() for the
+exact combined logic.
 
 This is an independent re-implementation (in Python) of the calculation
 logic found in two TradingView Pine Script indicators:
@@ -20,7 +25,10 @@ ENV VARS (all optional except none are required to just print to stdout):
   TELEGRAM_CHAT_ID     - chat id to send results to
   GENERATE_CHARTS      - "true"/"false" (default "true") -> render PNG charts
                           for matched pairs and send them as photos
-  TIMEFRAME            - default "30m"
+  TIMEFRAME            - default "30m". In normal use, scan.yml's "Resolve
+                          timeframe" step always overrides this based on
+                          which /scanXX command was used - this default only
+                          matters if you run the script standalone.
   CANDLE_LIMIT         - how many candles to fetch per symbol, default 500
   SIGNAL_LOOKBACK      - how many recent closed candles to scan for a
                           qualifying signal candle, default 50
@@ -34,8 +42,9 @@ ENV VARS (all optional except none are required to just print to stdout):
   QUOTE                - quote asset filter, default "USDT"
   API_TIMEOUT_MS       - ccxt request timeout in ms, default 30000 (raise
                           this if you keep seeing RequestTimeout errors)
-  CONFIRM_TIMEFRAMES   - comma-separated timeframes (default "15m,1h") ->
-                          a 30m match must ALSO show the same setup (same
+  CONFIRM_TIMEFRAMES   - comma-separated timeframes (default "15m,1h",
+                          overridden by scan.yml per the TIMEFRAME picked)
+                          -> the match must ALSO show the same setup (same
                           bias) on at least one of these before it counts.
                           Only checked for pairs that already matched on
                           TIMEFRAME, so it's cheap. Set to "" to disable.
@@ -87,11 +96,15 @@ MAX_CONCURRENCY = int(os.environ.get("MAX_CONCURRENCY", "8"))
 QUOTE           = os.environ.get("QUOTE", "USDT")
 GENERATE_CHARTS = os.environ.get("GENERATE_CHARTS", "true").lower() == "true"
 
-# Multi-timeframe confirmation: after a pair matches on TIMEFRAME (30m),
-# also require the SAME setup (OB + swing, same bias) on at least one of
-# these other timeframes before it counts as confirmed. Only applied to
-# pairs that already matched on 30m, so it's cheap - a couple of extra
-# fetches for a handful of candidates, not for all ~300 pairs.
+# Multi-timeframe confirmation: after a pair matches on TIMEFRAME (whichever
+# timeframe was picked via /scan15m, /scan30m, /scan1h or /scan4h), also
+# require the SAME setup (OB + swing, same bias) on at least one of these
+# other timeframes before it counts as confirmed. Only applied to pairs
+# that already matched on TIMEFRAME, so it's cheap - a couple of extra
+# fetches for a handful of candidates, not for the whole ~700+ pair universe.
+# NOTE: scan.yml's "Resolve timeframe" step always overrides both of these
+# based on which /scanXX command was used - editing the defaults below only
+# matters if you run this script standalone, outside that workflow.
 CONFIRM_TIMEFRAMES = [tf.strip() for tf in os.environ.get("CONFIRM_TIMEFRAMES", "15m,1h").split(",") if tf.strip()]
 CONFIRM_MODE = os.environ.get("CONFIRM_MODE", "any").lower()  # "any" or "all" of CONFIRM_TIMEFRAMES
 
