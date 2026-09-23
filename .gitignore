@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# GitHub Actions self-hosted runner - if you ever `mkdir actions-runner`
+# inside this repo's folder by mistake instead of a separate directory
+actions-runner/
+
+# Node / wrangler (only relevant if you use the wrangler CLI locally)
+node_modules/
+.wrangler/
