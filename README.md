@@ -236,5 +236,4 @@ USDC-margined pairs are excluded too).
 
 This is a best-effort port of your two indicators' behavior — worth
 double-checking the first scan's results against your TradingView chart
-directly. If something looks off, send the pair + candle time and it can
-be recalibrated.
+directly.
