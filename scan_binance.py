@@ -7,7 +7,7 @@ flags pairs where the LATEST CLOSED candle sits inside an active
 matching that OB's direction.
 
 This is an independent re-implementation (in Python) of the calculation
-logic found in two TradingView Pine Script indicators the user owns:
+logic found in two TradingView Pine Script indicators:
   1. LuxAlgo "Smart Money Concepts" -> internal structure / internal OB only
   2. A standard pivot-based HH/HL/LH/LL swing labeler
 
