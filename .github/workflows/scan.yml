@@ -123,6 +123,40 @@ jobs:
           asyncio.run(main())
           PY
 
+      - name: Compare Curl and Python TLS
+        run: |
+          echo "=== CURL ==="
+          curl -v --http1.1 \
+            "https://fapi.binance.com/fapi/v1/exchangeInfo" \
+            -o /tmp/binance.json
+
+          echo
+          echo "=== CURL RESULT ==="
+          wc -c /tmp/binance.json
+          head -c 200 /tmp/binance.json
+
+          echo
+          echo
+          echo "=== PYTHON SOCKET TLS ==="
+
+          python3 - <<'PY'
+          import socket
+          import ssl
+
+          host = "fapi.binance.com"
+          port = 443
+
+          ctx = ssl.create_default_context()
+
+          print("Connecting...")
+          with socket.create_connection((host, port), timeout=15) as sock:
+              with ctx.wrap_socket(sock, server_hostname=host) as ssock:
+                  print("TLS VERSION:", ssock.version())
+                  print("CIPHER:", ssock.cipher())
+                  print("CERT SUBJECT:", ssock.getpeercert().get("subject"))
+                  print("CERT ISSUER:", ssock.getpeercert().get("issuer"))
+          PY
+
       - name: Run scanner
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
