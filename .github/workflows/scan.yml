@@ -81,6 +81,48 @@ jobs:
           print(os.path.exists(certifi.where()))
           PY
 
+      - name: Test Binance with Python HTTP
+        run: |
+          python3 - <<'PY'
+          import asyncio
+          import aiohttp
+          import certifi
+          import ssl
+
+          URL = "https://fapi.binance.com/fapi/v1/exchangeInfo"
+
+          async def test(name, ssl_context):
+              print(f"\n=== {name} ===")
+              try:
+                  async with aiohttp.ClientSession() as session:
+                      async with session.get(
+                          URL,
+                          ssl=ssl_context,
+                          timeout=aiohttp.ClientTimeout(total=15),
+                      ) as response:
+                          body = await response.text()
+                          print("STATUS:", response.status)
+                          print("BODY LENGTH:", len(body))
+                          print("BODY:", body[:200])
+              except Exception as e:
+                  print(type(e).__name__, repr(e))
+
+          async def main():
+              await test("DEFAULT SSL", None)
+
+              certifi_context = ssl.create_default_context(
+                  cafile=certifi.where()
+              )
+              await test("CERTIFI SSL", certifi_context)
+
+              system_context = ssl.create_default_context(
+                  cafile="/usr/lib/ssl/cert.pem"
+              )
+              await test("SYSTEM SSL", system_context)
+
+          asyncio.run(main())
+          PY
+
       - name: Run scanner
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
