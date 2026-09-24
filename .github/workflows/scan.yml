@@ -57,6 +57,30 @@ jobs:
           update-ca-certificates
           pip3 install --break-system-packages -r requirements.txt
 
+      - name: Check Python SSL
+        run: |
+          python3 - <<'PY'
+          import ssl
+          import sys
+          import certifi
+
+          print("=== PYTHON ===")
+          print(sys.version)
+
+          print("\n=== OPENSSL ===")
+          print(ssl.OPENSSL_VERSION)
+
+          print("\n=== SSL DEFAULT PATHS ===")
+          print(ssl.get_default_verify_paths())
+
+          print("\n=== CERTIFI ===")
+          print(certifi.where())
+
+          print("\n=== CA FILE EXISTS ===")
+          import os
+          print(os.path.exists(certifi.where()))
+          PY
+
       - name: Run scanner
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
