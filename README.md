@@ -234,6 +234,6 @@ USDC-margined pairs are excluded too).
 > in the window qualifies, the most recent one is used as the headline
 > result.
 
-This is a best-effort port of your two indicators' behavior — worth
-double-checking the first scan's results against your TradingView chart
+This is a best-effort port of two indicators' behavior — worth
+double-checking the first scan's results against TradingView chart
 directly.
