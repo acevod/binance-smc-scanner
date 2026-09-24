@@ -53,6 +53,68 @@ jobs:
       - name: Install dependencies
         run: pip3 install --break-system-packages -r requirements.txt
 
+      - name: Diagnose Binance Futures
+        run: |
+          python3 - <<'PY'
+          import socket
+          import sys
+          import requests
+          import ccxt
+
+          print("=== ENV ===")
+          print("Python:", sys.version)
+          print("CCXT:", ccxt.__version__)
+
+          print("\n=== DNS ===")
+          try:
+              print(socket.getaddrinfo(
+                  "fapi.binance.com",
+                  443,
+                  type=socket.SOCK_STREAM
+              ))
+          except Exception as e:
+              print(type(e).__name__, e)
+
+          print("\n=== REQUESTS PING ===")
+          try:
+              r = requests.get(
+                  "https://fapi.binance.com/fapi/v1/ping",
+                  timeout=15
+              )
+              print("STATUS:", r.status_code)
+              print("BODY:", r.text)
+          except Exception as e:
+              print(type(e).__name__, repr(e))
+
+          print("\n=== REQUESTS EXCHANGEINFO ===")
+          try:
+              r = requests.get(
+                  "https://fapi.binance.com/fapi/v1/exchangeInfo",
+                  timeout=15
+              )
+              print("STATUS:", r.status_code)
+              print("BODY LENGTH:", len(r.text))
+              print("BODY:", r.text[:500])
+          except Exception as e:
+              print(type(e).__name__, repr(e))
+
+          print("\n=== CCXT EXCHANGEINFO ===")
+          exchange = ccxt.binanceusdm({
+              "enableRateLimit": True,
+              "timeout": 30000,
+          })
+          exchange.verbose = True
+
+          try:
+              result = exchange.publicGetExchangeInfo()
+              print("SUCCESS")
+              print("SYMBOLS:", len(result.get("symbols", [])))
+          except Exception as e:
+              print(type(e).__name__, repr(e))
+          finally:
+              exchange.close()
+          PY
+
       - name: Run scanner
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
