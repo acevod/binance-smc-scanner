@@ -12,7 +12,7 @@ setup confirmed on a neighboring timeframe. See evaluate_symbol() for the
 exact combined logic.
 
 This is an independent re-implementation (in Python) of the calculation
-logic found in two TradingView Pine Script indicators:
+logic found in two TradingView Pine Script indicators the user owns:
   1. LuxAlgo "Smart Money Concepts" -> internal structure / internal OB only
   2. A standard pivot-based HH/HL/LH/LL swing labeler
 
@@ -61,6 +61,11 @@ ENV VARS (all optional except none are required to just print to stdout):
                           the breakaway close (LL/HL for a bullish setup,
                           HH/LH for bearish - the same types used to
                           confirm the original signal)
+  REQUIRE_PREMIUM_DISCOUNT - "true"/"false" (default "true") -> the whole OB
+                          zone must sit in discount (bullish: range bottom
+                          to equilibrium) or premium (bearish: equilibrium
+                          to range top), using LuxAlgo's trailing swing
+                          range as of the last closed candle
 """
 
 import asyncio
@@ -92,6 +97,7 @@ MIN_CANDLES_BEYOND_OB = int(os.environ.get("MIN_CANDLES_BEYOND_OB", "5"))  # min
 REQUIRE_FVG = os.environ.get("REQUIRE_FVG", "true").lower() == "true"  # require a fresh 3-candle FVG at the breakaway
 REQUIRE_UNBROKEN_SWING = os.environ.get("REQUIRE_UNBROKEN_SWING", "true").lower() == "true"  # require a still-unbroken local extreme after the BOS/CHoCH
 REQUIRE_NO_OPPOSING_SWING = os.environ.get("REQUIRE_NO_OPPOSING_SWING", "true").lower() == "true"  # no contradicting swing labels after the breakaway close
+REQUIRE_PREMIUM_DISCOUNT = os.environ.get("REQUIRE_PREMIUM_DISCOUNT", "true").lower() == "true"  # bullish OB must sit in discount, bearish OB in premium
 MAX_CONCURRENCY = int(os.environ.get("MAX_CONCURRENCY", "8"))
 QUOTE           = os.environ.get("QUOTE", "USDT")
 GENERATE_CHARTS = os.environ.get("GENERATE_CHARTS", "true").lower() == "true"
@@ -226,12 +232,18 @@ def compute_internal_order_blocks(df: pd.DataFrame):
     Order Block Filter=ATR, Order Block Mitigation=High/Low - i.e. the
     library defaults, matching the user's settings).
 
-    Returns: (final_active_obs, obs_by_bar)
+    Returns: (final_active_obs, obs_by_bar, trailing_range)
       final_active_obs - list of OrderBlock still ACTIVE as of the last bar
       obs_by_bar        - dict bar_index -> list of OrderBlock active as of
                            THAT bar (snapshot), so callers can check "was
                            there an active OB at candle i" for any i, not
                            just the last one.
+      trailing_range    - (top, bottom) of LuxAlgo's trailing swing range as
+                           it would be drawn on the last bar (used for the
+                           premium/discount/equilibrium zones). Built from
+                           the size-50 swing pivots, then ratcheted outward
+                           on every bar by the bar's own high/low. Either
+                           side is NaN until its first swing pivot exists.
     """
     high = df["high"].to_numpy()
     low = df["low"].to_numpy()
@@ -251,17 +263,33 @@ def compute_internal_order_blocks(df: pd.DataFrame):
     swing_high_level, swing_low_level = float("nan"), float("nan")
     internal_trend_bias = 0  # 0 neutral, 1 bullish, -1 bearish
 
+    # LuxAlgo's trailing swing range (drives its premium/discount zones)
+    trailing_top, trailing_bottom = float("nan"), float("nan")
+    drawn_top, drawn_bottom = float("nan"), float("nan")
+
     order_blocks: list[OrderBlock] = []
     obs_by_bar: dict[int, list] = {}
 
     start = max(INTERNAL_LEN, SWING_LEN) + 1
     for i in range(start, n):
+        # updateTrailingExtremes() runs BEFORE the pivots of this bar are
+        # processed in the original script (math.max/min with na stays na,
+        # hence the NaN guards). What TradingView draws on the last bar is
+        # this ratcheted value, before any pivot reset of that same bar.
+        if not np.isnan(trailing_top):
+            trailing_top = max(high[i], trailing_top)
+        if not np.isnan(trailing_bottom):
+            trailing_bottom = min(low[i], trailing_bottom)
+        drawn_top, drawn_bottom = trailing_top, trailing_bottom
+
         if i in swing_events:
             _, kind, price = swing_events[i]
             if kind == "high":
                 swing_high_level = price
+                trailing_top = price
             else:
                 swing_low_level = price
+                trailing_bottom = price
 
         if i in internal_events:
             pivot_bar, kind, price = internal_events[i]
@@ -318,7 +346,7 @@ def compute_internal_order_blocks(df: pd.DataFrame):
         order_blocks = still_active[:100]
         obs_by_bar[i] = list(order_blocks)
 
-    return order_blocks, obs_by_bar
+    return order_blocks, obs_by_bar, (drawn_top, drawn_bottom)
 
 
 def compute_swing_labels(df: pd.DataFrame, lb=PIVOT_LB, rb=PIVOT_RB):
@@ -511,6 +539,28 @@ def has_opposing_swing_after(swings: list, bias: int, after_bar: int, last_i: in
     return False
 
 
+def ob_in_correct_half(ob: "OrderBlock", top: float, bottom: float) -> bool:
+    """
+    Premium/discount filter using LuxAlgo's trailing swing range:
+      equilibrium = midpoint of (top, bottom)
+      bullish OB -> the WHOLE OB zone must sit in discount, i.e.
+                    bottom <= zone <= equilibrium
+      bearish OB -> the WHOLE OB zone must sit in premium, i.e.
+                    equilibrium <= zone <= top
+    Returns False when the range isn't defined yet (no swing pivots).
+    """
+    if np.isnan(top) or np.isnan(bottom):
+        return False
+    eq = (top + bottom) / 2.0
+    # parsed high/low get swapped on high-volatility bars, so don't assume
+    # bar_low <= bar_high
+    zone_lo = min(ob.bar_low, ob.bar_high)
+    zone_hi = max(ob.bar_low, ob.bar_high)
+    if ob.bias == 1:
+        return bottom <= zone_lo and zone_hi <= eq
+    return eq <= zone_lo and zone_hi <= top
+
+
 def evaluate_symbol(df: pd.DataFrame):
     """
     Looks at every internal OB that is still ACTIVE (unmitigated) as of
@@ -537,12 +587,18 @@ def evaluate_symbol(df: pd.DataFrame):
     REQUIRE_NO_OPPOSING_SWING (default true) additionally rejects the
     match if a contradicting swing label has formed after the breakaway
     close (see has_opposing_swing_after).
+
+    REQUIRE_PREMIUM_DISCOUNT (default true) additionally requires the
+    whole OB zone to sit in the right half of LuxAlgo's trailing swing
+    range as of the last closed candle - discount (bottom..equilibrium)
+    for bullish, premium (equilibrium..top) for bearish (see
+    ob_in_correct_half).
     """
     n = len(df)
     last_i = n - 1  # last CLOSED candle (caller must have already dropped
                      # the currently-forming candle)
 
-    final_obs, _ = compute_internal_order_blocks(df)
+    final_obs, _, (range_top, range_bottom) = compute_internal_order_blocks(df)
     swings = compute_swing_labels(df)
     close = df["close"].to_numpy()
     high = df["high"].to_numpy()
@@ -599,6 +655,9 @@ def evaluate_symbol(df: pd.DataFrame):
         if REQUIRE_NO_OPPOSING_SWING and first_break is not None:
             if has_opposing_swing_after(swings, ob.bias, first_break, last_i):
                 continue
+
+        if REQUIRE_PREMIUM_DISCOUNT and not ob_in_correct_half(ob, range_top, range_bottom):
+            continue
 
         all_signals.append({"bar_index": ob.bar_index, "bias": matched_bias, "ob": ob,
                              "matched_labels": matched_labels, "fresh": fresh,
