@@ -10,7 +10,8 @@ from Telegram, looking for pairs where, within the last N closed candles,
 there's a candle that overlaps an active internal Order Block AND has a
 same-direction HH/HL/LH/LL swing label on the exact same candle - plus a
 fresh Fair Value Gap, an unbroken local extreme after the BOS/CHoCH, no
-contradicting swing label since, and confirmation on a neighboring
+contradicting swing label since, the OB sitting in the correct premium/
+discount half of the trailing range, and confirmation on a neighboring
 timeframe.
 
 ## How it works
@@ -155,7 +156,7 @@ A successful response looks like `{"ok":true,"result":true,...}`.
 ### 8. Test it
 Make sure `./run.sh` is running in the Termux Ubuntu shell (step 5), then
 send `/start` to your bot in Telegram - you'll get a welcome message with
-four timeframe buttons to tap. Within ~3-5 minutes of tapping one, results
+four timeframe buttons to tap. Within ~1-2 minutes of tapping one, results
 should land in the chat.
 
 You can also test the workflow directly without Telegram: repo →
@@ -190,6 +191,10 @@ defaults - override them via `scan.yml`'s `env:` block if needed:
 - `REQUIRE_NO_OPPOSING_SWING` (default `true`) — reject the match if a
   new same-type swing label (LL/HL for bullish, HH/LH for bearish) has
   formed since the breakaway close.
+- `REQUIRE_PREMIUM_DISCOUNT` (default `true`) — the whole OB zone must
+  sit in the right half of LuxAlgo's trailing swing range: discount
+  (bottom to equilibrium) for a bullish OB, premium (equilibrium to top)
+  for a bearish OB.
 - `GENERATE_CHARTS` — set to `"false"` for text-only results (faster).
 - `CHART_CANDLES` (default 50) — how many candles are shown in the chart
   image. Chart colors are further down the same config block
@@ -229,11 +234,12 @@ USDC-margined pairs are excluded too).
 > breakaway close must form a fresh (unfilled) 3-candle Fair Value Gap,
 > the local extreme reached after the BOS/CHoCH break must still be
 > unbroken, no new same-type swing label may have formed since the
-> break, and the same setup must also appear on at least one
-> neighboring timeframe (see the table above). If more than one candle
-> in the window qualifies, the most recent one is used as the headline
-> result.
+> break, the whole OB zone must sit in discount (bullish) or premium
+> (bearish) of the trailing swing range, and the same setup must also
+> appear on at least one neighboring timeframe (see the table above). If
+> more than one candle in the window qualifies, the most recent one is
+> used as the headline result.
 
 This is a best-effort port of two indicators' behavior — worth
-double-checking the first scan's results against TradingView chart
+double-checking the first scan's results against your TradingView chart
 directly.
