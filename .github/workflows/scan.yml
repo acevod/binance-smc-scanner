@@ -58,7 +58,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           CONFIRM_MODE: "any"
-          GENERATE_CHARTS: "false"
+          GENERATE_CHARTS: "true"
           # TIMEFRAME and CONFIRM_TIMEFRAMES come from the step above via GITHUB_ENV
         run: python3 scan_binance.py
 
