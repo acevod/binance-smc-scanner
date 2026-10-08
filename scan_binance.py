@@ -7,9 +7,10 @@ within the last SIGNAL_LOOKBACK closed candles, there's a candle that is
 BOTH the exact candle an active internal Order Block was built from AND
 the exact candle of a same-direction HH/HL/LH/LL swing label - plus a
 fresh Fair Value Gap at the breakaway, a still-unbroken local extreme
-after the BOS/CHoCH, no contradicting swing label since, and the same
-setup confirmed on a neighboring timeframe. See evaluate_symbol() for the
-exact combined logic.
+after the BOS/CHoCH, no contradicting swing label since, and at least one
+weekly Fibonacci level sitting inside the OB zone. Each timeframe is judged
+on its own - no confirmation on another timeframe is needed. See
+evaluate_symbol() for the exact combined logic.
 
 This is an independent re-implementation (in Python) of the calculation
 logic found in two TradingView Pine Script indicators the user owns:
@@ -42,14 +43,17 @@ ENV VARS (all optional except none are required to just print to stdout):
   QUOTE                - quote asset filter, default "USDT"
   API_TIMEOUT_MS       - ccxt request timeout in ms, default 30000 (raise
                           this if you keep seeing RequestTimeout errors)
-  CONFIRM_TIMEFRAMES   - comma-separated timeframes (default "15m,1h",
-                          overridden by scan.yml per the TIMEFRAME picked)
-                          -> the match must ALSO show the same setup (same
-                          bias) on at least one of these before it counts.
-                          Only checked for pairs that already matched on
-                          TIMEFRAME, so it's cheap. Set to "" to disable.
-  CONFIRM_MODE         - "any" (default) or "all" -> whether ONE or ALL of
-                          CONFIRM_TIMEFRAMES must also confirm
+  REQUIRE_FIB          - "true"/"false" (default "true") -> at least one
+                          Fibonacci level of the higher-timeframe candle
+                          (port of LonesomeTheBlue's "Fibonacci levels MTF")
+                          must sit inside the OB zone (see compute_fib_levels)
+  FIB_TIMEFRAME        - higher timeframe for the fib levels, default "1w"
+  FIB_CANDLE           - "last" (default, last CLOSED HTF candle) or
+                          "current" (the still-forming HTF candle)
+  FIB_LEVELS           - comma-separated ratios, default
+                          "0,0.236,0.382,0.5,0.618,0.786,1" (the indicator's
+                          enabled-by-default levels; add -0.382 / 1.236 for
+                          the extension levels it ships disabled)
   REQUIRE_FVG          - "true"/"false" (default "true") -> require a
                           fresh 3-candle Fair Value Gap around the OB's
                           breakaway close (see find_fvg)
@@ -102,17 +106,14 @@ MAX_CONCURRENCY = int(os.environ.get("MAX_CONCURRENCY", "8"))
 QUOTE           = os.environ.get("QUOTE", "USDT")
 GENERATE_CHARTS = os.environ.get("GENERATE_CHARTS", "true").lower() == "true"
 
-# Multi-timeframe confirmation: after a pair matches on TIMEFRAME (whichever
-# timeframe was picked via /scan15m, /scan30m, /scan1h or /scan4h), also
-# require the SAME setup (OB + swing, same bias) on at least one of these
-# other timeframes before it counts as confirmed. Only applied to pairs
-# that already matched on TIMEFRAME, so it's cheap - a couple of extra
-# fetches for a handful of candidates, not for the whole ~700+ pair universe.
-# NOTE: scan.yml's "Resolve timeframe" step always overrides both of these
-# based on which /scanXX command was used - editing the defaults below only
-# matters if you run this script standalone, outside that workflow.
-CONFIRM_TIMEFRAMES = [tf.strip() for tf in os.environ.get("CONFIRM_TIMEFRAMES", "15m,1h").split(",") if tf.strip()]
-CONFIRM_MODE = os.environ.get("CONFIRM_MODE", "any").lower()  # "any" or "all" of CONFIRM_TIMEFRAMES
+# Fibonacci confirmation (port of the "Fibonacci levels MTF" indicator, set to
+# Higher Time Frame = 1 week, Current or Last HTF Candle = Last): at least one
+# fib level of that higher-timeframe candle has to fall inside the OB zone.
+REQUIRE_FIB  = os.environ.get("REQUIRE_FIB", "true").lower() == "true"
+FIB_TIMEFRAME = os.environ.get("FIB_TIMEFRAME", "1w")
+FIB_CANDLE   = os.environ.get("FIB_CANDLE", "last").lower()  # "last" or "current"
+FIB_LEVELS   = [float(x) for x in os.environ.get(
+    "FIB_LEVELS", "0,0.236,0.382,0.5,0.618,0.786,1").split(",") if x.strip()]
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID")
@@ -133,6 +134,7 @@ CHART_TITLE_COLOR        = "#d1d4dc"   # title text color
 CHART_FVG_COLOR          = "#7e57c2"   # fair value gap zone (box + border lines)
 CHART_FVG_ZONE_ALPHA     = 0.18        # FVG box fill opacity (0-1)
 CHART_UNBROKEN_SWING_COLOR = "#26c6da" # unbroken local extreme marker line
+CHART_FIB_COLOR          = "#ffa726"   # fib level(s) sitting inside the OB zone
 
 # --- fixed indicator defaults (match the user's TradingView settings) ---
 INTERNAL_LEN = 5      # LuxAlgo internal structure length (fixed in the script)
@@ -561,7 +563,35 @@ def ob_in_correct_half(ob: "OrderBlock", top: float, bottom: float) -> bool:
     return eq <= zone_lo and zone_hi <= top
 
 
-def evaluate_symbol(df: pd.DataFrame):
+def compute_fib_levels(htf_candle, ratios=None):
+    """
+    Port of the "Fibonacci levels MTF" indicator's level math for ONE
+    higher-timeframe candle (open, high, low, close):
+      bullish HTF candle (close >= open): price = high - (high - low) * ratio
+      bearish HTF candle                : price = low  + (high - low) * ratio
+    so ratio 0 is the candle's extreme in the direction it closed and ratio 1
+    is the opposite extreme. Returns a list of (ratio, price).
+    """
+    o, h, l, c = htf_candle
+    ratios = FIB_LEVELS if ratios is None else ratios
+    rng = h - l
+    if not rng > 0:
+        return []
+    if c >= o:
+        return [(r, h - rng * r) for r in ratios]
+    return [(r, l + rng * r) for r in ratios]
+
+
+def fib_levels_in_ob(ob: "OrderBlock", fib_levels):
+    """Every (ratio, price) fib level that sits inside the OB zone (edges
+    included). Parsed high/low get swapped on high-volatility bars, so don't
+    assume bar_low <= bar_high."""
+    zone_lo = min(ob.bar_low, ob.bar_high)
+    zone_hi = max(ob.bar_low, ob.bar_high)
+    return [(r, p) for r, p in fib_levels if zone_lo <= p <= zone_hi]
+
+
+def evaluate_symbol(df: pd.DataFrame, fib_levels=None):
     """
     Looks at every internal OB that is still ACTIVE (unmitigated) as of
     the last closed candle. A match requires that OB's own candle (the
@@ -593,6 +623,13 @@ def evaluate_symbol(df: pd.DataFrame):
     range as of the last closed candle - discount (bottom..equilibrium)
     for bullish, premium (equilibrium..top) for bearish (see
     ob_in_correct_half).
+
+    REQUIRE_FIB (default true) additionally requires at least one level of
+    `fib_levels` (list of (ratio, price) from compute_fib_levels - the
+    weekly candle's fib grid) to sit inside the OB zone. Passing
+    fib_levels=None skips this check, which lets the caller run a cheap
+    first pass and only fetch the weekly candle for symbols that already
+    have a candidate.
     """
     n = len(df)
     last_i = n - 1  # last CLOSED candle (caller must have already dropped
@@ -659,11 +696,18 @@ def evaluate_symbol(df: pd.DataFrame):
         if REQUIRE_PREMIUM_DISCOUNT and not ob_in_correct_half(ob, range_top, range_bottom):
             continue
 
+        fib_hits = []
+        if REQUIRE_FIB and fib_levels is not None:
+            fib_hits = fib_levels_in_ob(ob, fib_levels)
+            if not fib_hits:
+                continue
+
         all_signals.append({"bar_index": ob.bar_index, "bias": matched_bias, "ob": ob,
                              "matched_labels": matched_labels, "fresh": fresh,
                              "candles_beyond_ob": candles_beyond, "fvg": fvg,
                              "unbroken_swing_bar": unbroken_swing_bar,
-                             "unbroken_swing_price": unbroken_swing_price})
+                             "unbroken_swing_price": unbroken_swing_price,
+                             "fib_hits": fib_hits})
 
     if not all_signals:
         return None
@@ -724,6 +768,30 @@ async def fetch_ohlcv_df(exchange, symbol, timeframe):
     return df.iloc[:-1]  # drop currently-forming candle
 
 
+async def fetch_fib_candle(exchange, symbol):
+    """(open, high, low, close) of the higher-timeframe candle the fib grid
+    is drawn from, or None. FIB_CANDLE="last" -> last CLOSED candle (the
+    indicator's "Last" option); "current" -> the still-forming one."""
+    ohlcv = None
+    for attempt in range(3):
+        try:
+            ohlcv = await exchange.fetch_ohlcv(symbol, timeframe=FIB_TIMEFRAME, limit=3)
+            break
+        except Exception:
+            if attempt == 2:
+                return None
+            await asyncio.sleep(1.5 * (attempt + 1))
+    if not ohlcv:
+        return None
+    if FIB_CANDLE == "current":
+        row = ohlcv[-1]
+    else:
+        if len(ohlcv) < 2:
+            return None  # no closed HTF candle yet (brand-new listing)
+        row = ohlcv[-2]  # [-1] is the forming candle
+    return row[1], row[2], row[3], row[4]
+
+
 async def fetch_and_evaluate(exchange, symbol, sem):
     async with sem:
         df = await fetch_ohlcv_df(exchange, symbol, TIMEFRAME)
@@ -737,24 +805,25 @@ async def fetch_and_evaluate(exchange, symbol, sem):
         if not match:
             return None
 
-        # --- multi-timeframe confirmation (only runs for candidates that
-        # already matched on TIMEFRAME, so this stays cheap) ---
-        if CONFIRM_TIMEFRAMES:
-            confirmed_on = []
-            for tf in CONFIRM_TIMEFRAMES:
-                cdf = await fetch_ohlcv_df(exchange, symbol, tf)
-                if cdf is None:
-                    continue
-                try:
-                    cmatch = evaluate_symbol(cdf)
-                except Exception:
-                    continue
-                if cmatch and cmatch["bias"] == match["bias"]:
-                    confirmed_on.append(tf)
-            ok = (len(confirmed_on) == len(CONFIRM_TIMEFRAMES)) if CONFIRM_MODE == "all" else len(confirmed_on) > 0
-            if not ok:
+        # --- fibonacci filter: only for candidates that already matched on
+        # TIMEFRAME, so it costs one tiny extra fetch per candidate. Re-run
+        # evaluate_symbol with the fib grid so the fib check is applied per
+        # signal (an older signal can still qualify if the newest one doesn't).
+        if REQUIRE_FIB:
+            candle = await fetch_fib_candle(exchange, symbol)
+            if candle is None:
                 return None
-            match["confirmed_on"] = confirmed_on
+            fib_levels = compute_fib_levels(candle)
+            if not fib_levels:
+                return None
+            try:
+                match = evaluate_symbol(df, fib_levels)
+            except Exception:
+                traceback.print_exc()
+                return None
+            if not match:
+                return None
+            match["fib_candle"] = candle
 
         match["symbol"] = symbol
         match["df"] = df
@@ -840,6 +909,13 @@ def render_chart(match) -> bytes | None:
             ax.text((x_pivot + x_break) / 2, ob.break_level, ob.tag,
                      color=CHART_BOS_CHOCH_COLOR, fontsize=8, ha="center",
                      va="bottom" if ob.bias == 1 else "top")
+
+    # --- fib levels that fall inside the OB zone ---
+    for ratio, price in match.get("fib_hits") or []:
+        ax.plot([0, len(plot_df) - 1], [price, price],
+                 color=CHART_FIB_COLOR, lw=0.9, ls=":")
+        ax.text(0, price, f" fib {ratio:g}", color=CHART_FIB_COLOR,
+                 fontsize=7, ha="left", va="bottom")
 
     # --- FVG zone (shaded box only, spanning from candle1 to the right edge) ---
     fvg = match.get("fvg")
@@ -936,16 +1012,18 @@ def display_symbol(symbol: str) -> str:
 
 def format_result_line(m):
     arrow = "🟢" if m["bias"] == "bullish" else "🔴"
-    confirm_tag = f" - synced with {'/'.join(m['confirmed_on'])}" if m.get("confirmed_on") else ""
+    fib_tag = ""
+    if m.get("fib_hits"):
+        fib_tag = " | fib " + ", ".join(f"{r:g}@{p:.4f}" for r, p in m["fib_hits"])
     fvg_tag = ""
     if m.get("fvg"):
         fvg_tag = f" | FVG {m['fvg']['low']:.4f}-{m['fvg']['high']:.4f}"
     swing_tag = ""
     if m.get("unbroken_swing_price") is not None:
         swing_tag = f" | unbroken {m['unbroken_swing_price']:.4f}"
-    return (f"{arrow} <b>{display_symbol(m['symbol'])}</b> - {m['bias']}{confirm_tag} | "
+    return (f"{arrow} <b>{display_symbol(m['symbol'])}</b> - {m['bias']} | "
             f"OB {m['ob'].bar_low:.4f}-{m['ob'].bar_high:.4f} | "
-            f"swing: {','.join(m['matched_labels'])}{fvg_tag}{swing_tag} | "
+            f"swing: {','.join(m['matched_labels'])}{fvg_tag}{swing_tag}{fib_tag} | "
             f"price now {m['last_price']:.4f}")
 
 
