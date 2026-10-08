@@ -5,10 +5,10 @@
  *
  * Commands:
  *   /start    - welcome message with tappable timeframe buttons
- *   /scan15m  - scan 15m (confirms against 5m or 30m)
- *   /scan30m  - scan 30m (confirms against 15m or 1h)
- *   /scan1h   - scan 1h  (confirms against 30m or 4h)
- *   /scan4h   - scan 4h  (confirms against 1h or 1D)
+ *   /scan15m  - scan 15m
+ *   /scan30m  - scan 30m
+ *   /scan1h   - scan 1h
+ *   /scan4h   - scan 4h
  * The inline keyboard buttons under /start trigger the same thing as
  * typing the matching command - use whichever is more convenient.
  *
@@ -106,9 +106,9 @@ async function sendWelcomeMessage(env) {
     body: JSON.stringify({
       chat_id: env.TELEGRAM_CHAT_ID,
       text: "👋 Binance SMC Scanner\n\n"
-          + "Scans every Binance USDT-M futures pair for a confirmed "
-          + "Order Block + swing point setup (SMC/ICT), cross-checked "
-          + "against a neighboring timeframe before it counts.\n\n"
+          + "Scans every Binance USDT-M futures pair for an "
+          + "Order Block + swing point setup (SMC/ICT) with a weekly "
+          + "Fibonacci level inside the OB zone.\n\n"
           + "Pick a timeframe to scan:",
       reply_markup: {
         inline_keyboard: [
