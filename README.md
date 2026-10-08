@@ -7,12 +7,12 @@
 
 Scans every Binance USDT-M perpetual futures pair on a timeframe you pick
 from Telegram, looking for pairs where, within the last N closed candles,
-there's a candle that overlaps an active internal Order Block AND has a
-same-direction HH/HL/LH/LL swing label on the exact same candle - plus a
+there's a candle that is the exact candle an active internal Order Block was
+built from AND the exact candle of a same-direction HH/HL/LH/LL swing label - plus a
 fresh Fair Value Gap, an unbroken local extreme after the BOS/CHoCH, no
 contradicting swing label since, the OB sitting in the correct premium/
-discount half of the trailing range, and confirmation on a neighboring
-timeframe.
+discount half of the trailing range, and at least one weekly Fibonacci
+level inside the OB zone.
 
 ## How it works
 
@@ -166,10 +166,10 @@ dropdown (still needs the runner online).
 ## Commands
 
 - `/start` — shows a welcome message with tappable timeframe buttons
-- `/scan15m` — scan the 15m timeframe (confirms against 5m or 30m)
-- `/scan30m` — scan the 30m timeframe (confirms against 15m or 1h)
-- `/scan1h` — scan the 1h timeframe (confirms against 30m or 4h)
-- `/scan4h` — scan the 4h timeframe (confirms against 1h or 1D)
+- `/scan15m` — scan the 15m timeframe
+- `/scan30m` — scan the 30m timeframe
+- `/scan1h` — scan the 1h timeframe
+- `/scan4h` — scan the 4h timeframe
 
 There's no bare `/scan` anymore - a timeframe always has to be picked,
 either by tapping a button or typing the matching command.
@@ -195,7 +195,30 @@ defaults - override them via `scan.yml`'s `env:` block if needed:
   sit in the right half of LuxAlgo's trailing swing range: discount
   (bottom to equilibrium) for a bullish OB, premium (equilibrium to top)
   for a bearish OB.
+- `REQUIRE_FIB` (default `true`) — at least one Fibonacci level of the
+  higher-timeframe candle must sit inside the OB zone. This is a port of
+  LonesomeTheBlue's "Fibonacci levels MTF" indicator: for a bullish HTF
+  candle the level is `high - (high - low) * ratio`, for a bearish one
+  `low + (high - low) * ratio`. Only checked for pairs that already
+  matched, so it costs one tiny extra fetch per candidate.
+  - `FIB_TIMEFRAME` (default `1w`) — the indicator's "Higher Time Frame".
+  - `FIB_CANDLE` (default `last`) — `last` = last closed HTF candle,
+    `current` = the still-forming one (the indicator's "Current or Last
+    HTF Candle").
+  - `FIB_LEVELS` (default `0,0.236,0.382,0.5,0.618,0.786,1`) — the
+    indicator's enabled-by-default levels; add `-0.382` / `1.236` for the
+    extension levels it ships disabled.
+  - `scan.yml` sets `FIB_TIMEFRAME` and `FIB_CANDLE` explicitly in the
+    `Run scanner` step - change them there, not just in the script.
+  - The fib grid always comes from the weekly candle that is "last" **as
+    of the scan**, not as of when the OB formed. An OB from a few weeks
+    ago is therefore checked against the most recent weekly range.
 - `GENERATE_CHARTS` — set to `"false"` for text-only results (faster).
+- `MAX_CONCURRENCY` (default 8) — how many symbols are fetched at once.
+- `API_TIMEOUT_MS` (default 30000) — ccxt request timeout; raise it if
+  you keep seeing `RequestTimeout` errors.
+- `QUOTE` (default `USDT`) — quote/settle asset filter for the pair
+  universe.
 - `CHART_CANDLES` (default 50) — how many candles are shown in the chart
   image. Chart colors are further down the same config block
   (`CHART_BG_COLOR`, `CHART_UP_COLOR`, etc.) if you want to restyle them.
@@ -203,22 +226,10 @@ defaults - override them via `scan.yml`'s `env:` block if needed:
   ~220 for the 200-period ATR + 50-bar swing warmup; default 500 is
   safe).
 
-**Timeframe + confirmation pairing is NOT set in `scan_binance.py`** —
-it's resolved by the "Resolve timeframe" step in `scan.yml`, which maps
-each `/scanXX` command to its confirmation timeframe(s):
-
-| Command | Scans | Confirms against |
-|---|---|---|
-| `/scan15m` | 15m | 5m or 30m |
-| `/scan30m` | 30m | 15m or 1h |
-| `/scan1h` | 1h | 30m or 4h |
-| `/scan4h` | 4h | 1h or 1D |
-
-`CONFIRM_MODE` is also fixed to `"any"` there (only one of the two needs
-to confirm). To change either the pairing table or `"any"`/`"all"`, edit
-the `case` block and the `Run scanner` step's env in `scan.yml` directly
-— editing `scan_binance.py`'s own `CONFIRM_TIMEFRAMES`/`CONFIRM_MODE`
-defaults has no effect, since the workflow always overrides them.
+**Each timeframe is judged on its own.** `/scan15m`, `/scan30m`, `/scan1h`
+and `/scan4h` only look at the picked timeframe - there's no confirmation
+on any other timeframe anymore. The `Resolve timeframe` step in `scan.yml`
+just passes the picked timeframe through as `TIMEFRAME`.
 
 Pair universe: USD-M futures only (`binanceusdm`, never COIN-M), and
 only pairs where both quote and settle currency are USDT (so
@@ -235,10 +246,10 @@ USDC-margined pairs are excluded too).
 > the local extreme reached after the BOS/CHoCH break must still be
 > unbroken, no new same-type swing label may have formed since the
 > break, the whole OB zone must sit in discount (bullish) or premium
-> (bearish) of the trailing swing range, and the same setup must also
-> appear on at least one neighboring timeframe (see the table above). If
-> more than one candle in the window qualifies, the most recent one is
-> used as the headline result.
+> (bearish) of the trailing swing range, and at least one fib level of
+> the last closed weekly candle must fall inside the OB zone. If more
+> than one candle in the window qualifies, the most recent one is used
+> as the headline result.
 
 This is a best-effort port of two indicators' behavior — worth
 double-checking the first scan's results against your TradingView chart
