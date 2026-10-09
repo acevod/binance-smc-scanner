@@ -8,7 +8,8 @@ BOTH the exact candle an active internal Order Block was built from AND
 the exact candle of a same-direction HH/HL/LH/LL swing label - plus a
 fresh Fair Value Gap at the breakaway, a still-unbroken local extreme
 after the BOS/CHoCH, no contradicting swing label since, and at least one
-weekly Fibonacci level sitting inside the OB zone. Each timeframe is judged
+weekly or monthly Fibonacci level in the right half of the OB zone (upper half
+for bullish, lower half for bearish). Each timeframe is judged
 on its own - no confirmation on another timeframe is needed. See
 evaluate_symbol() for the exact combined logic.
 
@@ -26,7 +27,8 @@ ENV VARS (all optional except none are required to just print to stdout):
   TELEGRAM_CHAT_ID     - chat id to send results to
   GENERATE_CHARTS      - "true"/"false" (default "true") -> render PNG charts
                           for matched pairs and send them as photos
-  TIMEFRAME            - default "30m". In normal use, scan.yml's "Resolve
+  TIMEFRAME            - default "30m", or "all" to scan every timeframe in
+                          ALL_TIMEFRAMES one after the other. In normal use, scan.yml's "Resolve
                           timeframe" step always overrides this based on
                           which /scanXX command was used - this default only
                           matters if you run the script standalone.
@@ -44,10 +46,13 @@ ENV VARS (all optional except none are required to just print to stdout):
   API_TIMEOUT_MS       - ccxt request timeout in ms, default 30000 (raise
                           this if you keep seeing RequestTimeout errors)
   REQUIRE_FIB          - "true"/"false" (default "true") -> at least one
-                          Fibonacci level of the higher-timeframe candle
+                          Fibonacci level of a higher-timeframe candle
                           (port of LonesomeTheBlue's "Fibonacci levels MTF")
-                          must sit inside the OB zone (see compute_fib_levels)
-  FIB_TIMEFRAME        - higher timeframe for the fib levels, default "1w"
+                          must sit in the right HALF of the OB zone: upper
+                          half for a bullish OB, lower half for a bearish OB
+                          (see compute_fib_levels / fib_levels_in_ob)
+  FIB_TIMEFRAMES       - higher timeframes the fib levels come from, default
+                          "1w,1M" (weekly OR monthly - a hit on either counts)
   FIB_CANDLE           - "last" (default, last CLOSED HTF candle) or
                           "current" (the still-forming HTF candle)
   FIB_LEVELS           - comma-separated ratios, default
@@ -93,7 +98,9 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------------
+ALL_TIMEFRAMES  = ["15m", "30m", "1h", "4h"]
 TIMEFRAME       = os.environ.get("TIMEFRAME", "30m")
+TIMEFRAMES      = ALL_TIMEFRAMES if TIMEFRAME.lower() == "all" else [TIMEFRAME]
 CANDLE_LIMIT    = int(os.environ.get("CANDLE_LIMIT", "500"))
 SIGNAL_LOOKBACK = int(os.environ.get("SIGNAL_LOOKBACK", "50"))  # how many recent closed candles to scan
 REQUIRE_FRESH_OB = os.environ.get("REQUIRE_FRESH_OB", "true").lower() == "true"  # only keep untested OBs
@@ -107,10 +114,11 @@ QUOTE           = os.environ.get("QUOTE", "USDT")
 GENERATE_CHARTS = os.environ.get("GENERATE_CHARTS", "true").lower() == "true"
 
 # Fibonacci confirmation (port of the "Fibonacci levels MTF" indicator, set to
-# Higher Time Frame = 1 week, Current or Last HTF Candle = Last): at least one
-# fib level of that higher-timeframe candle has to fall inside the OB zone.
+# Higher Time Frame = 1 week and/or 1 month, Current or Last HTF Candle = Last):
+# at least one fib level of the weekly OR monthly candle has to fall inside the
+# right HALF of the OB zone - upper half for bullish, lower half for bearish.
 REQUIRE_FIB  = os.environ.get("REQUIRE_FIB", "true").lower() == "true"
-FIB_TIMEFRAME = os.environ.get("FIB_TIMEFRAME", "1w")
+FIB_TIMEFRAMES = [t.strip() for t in os.environ.get("FIB_TIMEFRAMES", "1w,1M").split(",") if t.strip()]
 FIB_CANDLE   = os.environ.get("FIB_CANDLE", "last").lower()  # "last" or "current"
 FIB_LEVELS   = [float(x) for x in os.environ.get(
     "FIB_LEVELS", "0,0.236,0.382,0.5,0.618,0.786,1").split(",") if x.strip()]
@@ -563,14 +571,14 @@ def ob_in_correct_half(ob: "OrderBlock", top: float, bottom: float) -> bool:
     return eq <= zone_lo and zone_hi <= top
 
 
-def compute_fib_levels(htf_candle, ratios=None):
+def compute_fib_levels(htf_candle, tf_label, ratios=None):
     """
     Port of the "Fibonacci levels MTF" indicator's level math for ONE
     higher-timeframe candle (open, high, low, close):
       bullish HTF candle (close >= open): price = high - (high - low) * ratio
       bearish HTF candle                : price = low  + (high - low) * ratio
     so ratio 0 is the candle's extreme in the direction it closed and ratio 1
-    is the opposite extreme. Returns a list of (ratio, price).
+    is the opposite extreme. Returns a list of (tf_label, ratio, price).
     """
     o, h, l, c = htf_candle
     ratios = FIB_LEVELS if ratios is None else ratios
@@ -578,17 +586,24 @@ def compute_fib_levels(htf_candle, ratios=None):
     if not rng > 0:
         return []
     if c >= o:
-        return [(r, h - rng * r) for r in ratios]
-    return [(r, l + rng * r) for r in ratios]
+        return [(tf_label, r, h - rng * r) for r in ratios]
+    return [(tf_label, r, l + rng * r) for r in ratios]
 
 
 def fib_levels_in_ob(ob: "OrderBlock", fib_levels):
-    """Every (ratio, price) fib level that sits inside the OB zone (edges
-    included). Parsed high/low get swapped on high-volatility bars, so don't
-    assume bar_low <= bar_high."""
+    """
+    Every (tf_label, ratio, price) fib level that sits in the right HALF of
+    the OB zone (midpoint and outer edge included):
+      bullish OB -> upper half (midpoint .. zone high)
+      bearish OB -> lower half (zone low .. midpoint)
+    Parsed high/low get swapped on high-volatility bars, so don't assume
+    bar_low <= bar_high.
+    """
     zone_lo = min(ob.bar_low, ob.bar_high)
     zone_hi = max(ob.bar_low, ob.bar_high)
-    return [(r, p) for r, p in fib_levels if zone_lo <= p <= zone_hi]
+    mid = (zone_lo + zone_hi) / 2.0
+    lo, hi = (mid, zone_hi) if ob.bias == 1 else (zone_lo, mid)
+    return [(t, r, p) for t, r, p in fib_levels if lo <= p <= hi]
 
 
 def evaluate_symbol(df: pd.DataFrame, fib_levels=None):
@@ -625,8 +640,9 @@ def evaluate_symbol(df: pd.DataFrame, fib_levels=None):
     ob_in_correct_half).
 
     REQUIRE_FIB (default true) additionally requires at least one level of
-    `fib_levels` (list of (ratio, price) from compute_fib_levels - the
-    weekly candle's fib grid) to sit inside the OB zone. Passing
+    `fib_levels` (list of (tf, ratio, price) from compute_fib_levels - the
+    weekly and monthly fib grids) to sit in the right half of the OB zone
+    (see fib_levels_in_ob). Passing
     fib_levels=None skips this check, which lets the caller run a cheap
     first pass and only fetch the weekly candle for symbols that already
     have a candidate.
@@ -768,14 +784,14 @@ async def fetch_ohlcv_df(exchange, symbol, timeframe):
     return df.iloc[:-1]  # drop currently-forming candle
 
 
-async def fetch_fib_candle(exchange, symbol):
+async def fetch_fib_candle(exchange, symbol, tf):
     """(open, high, low, close) of the higher-timeframe candle the fib grid
     is drawn from, or None. FIB_CANDLE="last" -> last CLOSED candle (the
     indicator's "Last" option); "current" -> the still-forming one."""
     ohlcv = None
     for attempt in range(3):
         try:
-            ohlcv = await exchange.fetch_ohlcv(symbol, timeframe=FIB_TIMEFRAME, limit=3)
+            ohlcv = await exchange.fetch_ohlcv(symbol, timeframe=tf, limit=3)
             break
         except Exception:
             if attempt == 2:
@@ -792,9 +808,22 @@ async def fetch_fib_candle(exchange, symbol):
     return row[1], row[2], row[3], row[4]
 
 
-async def fetch_and_evaluate(exchange, symbol, sem):
+async def fetch_fib_levels(exchange, symbol):
+    """Fib grids of every FIB_TIMEFRAMES candle, merged into one list of
+    (tf, ratio, price). A timeframe without a usable candle (e.g. a pair
+    listed less than a month ago has no closed monthly candle) is just
+    skipped - the others still count."""
+    levels = []
+    for tf in FIB_TIMEFRAMES:
+        candle = await fetch_fib_candle(exchange, symbol, tf)
+        if candle is not None:
+            levels.extend(compute_fib_levels(candle, tf))
+    return levels
+
+
+async def fetch_and_evaluate(exchange, symbol, sem, timeframe):
     async with sem:
-        df = await fetch_ohlcv_df(exchange, symbol, TIMEFRAME)
+        df = await fetch_ohlcv_df(exchange, symbol, timeframe)
         if df is None:
             return None
         try:
@@ -806,14 +835,12 @@ async def fetch_and_evaluate(exchange, symbol, sem):
             return None
 
         # --- fibonacci filter: only for candidates that already matched on
-        # TIMEFRAME, so it costs one tiny extra fetch per candidate. Re-run
-        # evaluate_symbol with the fib grid so the fib check is applied per
-        # signal (an older signal can still qualify if the newest one doesn't).
+        # `timeframe`, so it costs a couple of tiny extra fetches per
+        # candidate. Re-run evaluate_symbol with the fib grids so the fib
+        # check is applied per signal (an older signal can still qualify if
+        # the newest one doesn't).
         if REQUIRE_FIB:
-            candle = await fetch_fib_candle(exchange, symbol)
-            if candle is None:
-                return None
-            fib_levels = compute_fib_levels(candle)
+            fib_levels = await fetch_fib_levels(exchange, symbol)
             if not fib_levels:
                 return None
             try:
@@ -823,25 +850,25 @@ async def fetch_and_evaluate(exchange, symbol, sem):
                 return None
             if not match:
                 return None
-            match["fib_candle"] = candle
 
         match["symbol"] = symbol
+        match["timeframe"] = timeframe
         match["df"] = df
         match["last_price"] = df["close"].iloc[-1]
         match["last_time"] = pd.to_datetime(df["ts"].iloc[-1], unit="ms", utc=True)
         return match
 
 
-async def run_scan():
+async def run_scan(timeframe):
     # Default ccxt timeout (10s) is tight for a mobile/Termux connection;
     # give it more room before giving up on a single request.
     api_timeout_ms = int(os.environ.get("API_TIMEOUT_MS", "30000"))
     exchange = ccxt.binanceusdm({"enableRateLimit": True, "timeout": api_timeout_ms})
     try:
         symbols = await fetch_symbols(exchange)
-        print(f"Scanning {len(symbols)} {QUOTE} perpetual pairs on {TIMEFRAME}...")
+        print(f"Scanning {len(symbols)} {QUOTE} perpetual pairs on {timeframe}...")
         sem = asyncio.Semaphore(MAX_CONCURRENCY)
-        tasks = [fetch_and_evaluate(exchange, s, sem) for s in symbols]
+        tasks = [fetch_and_evaluate(exchange, s, sem, timeframe) for s in symbols]
         results = []
         for coro in asyncio.as_completed(tasks):
             r = await coro
@@ -881,7 +908,7 @@ def render_chart(match) -> bytes | None:
         returnfig=True, figsize=(9, 6),
     )
     ax = axlist[0]
-    ax.set_title(f"{display_symbol(match['symbol'])} - Binance - {TIMEFRAME} - {match['bias'].capitalize()}",
+    ax.set_title(f"{display_symbol(match['symbol'])} - Binance - {match['timeframe']} - {match['bias'].capitalize()}",
                   color=CHART_TITLE_COLOR, fontsize=13, fontweight="bold", pad=14)
     ax.set_xticks([])
     ax.set_yticks([])
@@ -910,11 +937,11 @@ def render_chart(match) -> bytes | None:
                      color=CHART_BOS_CHOCH_COLOR, fontsize=8, ha="center",
                      va="bottom" if ob.bias == 1 else "top")
 
-    # --- fib levels that fall inside the OB zone ---
-    for ratio, price in match.get("fib_hits") or []:
+    # --- fib levels (weekly / monthly) in the right half of the OB ---
+    for tf_label, ratio, price in match.get("fib_hits") or []:
         ax.plot([0, len(plot_df) - 1], [price, price],
                  color=CHART_FIB_COLOR, lw=0.9, ls=":")
-        ax.text(0, price, f" fib {ratio:g}", color=CHART_FIB_COLOR,
+        ax.text(0, price, f" fib {tf_label} {ratio:g}", color=CHART_FIB_COLOR,
                  fontsize=7, ha="left", va="bottom")
 
     # --- FVG zone (shaded box only, spanning from candle1 to the right edge) ---
@@ -985,6 +1012,7 @@ def send_timeframe_picker():
              {"text": "30m", "callback_data": "scan_30m"}],
             [{"text": "1h", "callback_data": "scan_1h"},
              {"text": "4h", "callback_data": "scan_4h"}],
+            [{"text": "All TF", "callback_data": "scan_all"}],
         ]
     }
     send_telegram_message("Pick a timeframe to scan:", reply_markup=keyboard)
@@ -1014,7 +1042,7 @@ def format_result_line(m):
     arrow = "🟢" if m["bias"] == "bullish" else "🔴"
     fib_tag = ""
     if m.get("fib_hits"):
-        fib_tag = " | fib " + ", ".join(f"{r:g}@{p:.4f}" for r, p in m["fib_hits"])
+        fib_tag = " | fib " + ", ".join(f"{t} {r:g}@{p:.4f}" for t, r, p in m["fib_hits"])
     fvg_tag = ""
     if m.get("fvg"):
         fvg_tag = f" | FVG {m['fvg']['low']:.4f}-{m['fvg']['high']:.4f}"
@@ -1030,20 +1058,20 @@ def format_result_line(m):
 # ---------------------------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------------------------
-def main():
+def scan_one_timeframe(timeframe):
+    """Scan the whole universe on one timeframe and send its results."""
     t0 = time.time()
-    results = asyncio.run(run_scan())
+    results = asyncio.run(run_scan(timeframe))
     elapsed = time.time() - t0
 
     if not results:
-        msg = f"✅ Scan complete ({elapsed:.0f}s). No matching pairs right now."
+        msg = f"✅ Scan {timeframe} complete ({elapsed:.0f}s). No matching pairs right now."
         print(msg)
         send_telegram_message(msg)
-        send_timeframe_picker()
         return
 
     results.sort(key=lambda m: m["symbol"])
-    lines = [f"✅ Scan complete ({elapsed:.0f}s) - {len(results)} matching pair(s):\n"]
+    lines = [f"✅ Scan {timeframe} complete ({elapsed:.0f}s) - {len(results)} matching pair(s):\n"]
     for m in results:
         lines.append(format_result_line(m))
     text = "\n".join(lines)
@@ -1054,10 +1082,20 @@ def main():
         for m in results:
             png = render_chart(m)
             if png:
-                caption = f"{display_symbol(m['symbol'])} - Binance - {TIMEFRAME} - {m['bias'].capitalize()}"
+                caption = f"{display_symbol(m['symbol'])} - Binance - {timeframe} - {m['bias'].capitalize()}"
                 send_telegram_photo(png, caption)
             time.sleep(1.1)  # stay under Telegram's ~1 msg/sec rate limit
 
+
+def main():
+    # TIMEFRAME=all -> every timeframe in ALL_TIMEFRAMES, one after another,
+    # each with its own result message; the picker is sent once at the end.
+    for tf in TIMEFRAMES:
+        try:
+            scan_one_timeframe(tf)
+        except Exception:
+            traceback.print_exc()
+            send_telegram_message(f"⚠️ Scan {tf} crashed, see the Actions log.")
     send_timeframe_picker()
 
 
