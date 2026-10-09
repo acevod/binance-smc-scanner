@@ -9,6 +9,7 @@
  *   /scan30m  - scan 30m
  *   /scan1h   - scan 1h
  *   /scan4h   - scan 4h
+ *   /scanall  - scan 15m, 30m, 1h and 4h one after another
  * The inline keyboard buttons under /start trigger the same thing as
  * typing the matching command - use whichever is more convenient.
  *
@@ -31,6 +32,7 @@ const CMD_TO_TF = {
   "/scan30m": "30m",
   "/scan1h": "1h",
   "/scan4h": "4h",
+  "/scanall": "all",
 };
 
 const CALLBACK_TO_TF = {
@@ -38,6 +40,7 @@ const CALLBACK_TO_TF = {
   "scan_30m": "30m",
   "scan_1h": "1h",
   "scan_4h": "4h",
+  "scan_all": "all",
 };
 
 export default {
@@ -94,7 +97,9 @@ export default {
 };
 
 async function startScan(env, timeframe) {
-  await sendTelegramMessage(env, `🔍 Scan ${timeframe} started, give it a few minutes...`);
+  const label = timeframe === "all" ? "all timeframes (15m, 30m, 1h, 4h)" : timeframe;
+  const eta = timeframe === "all" ? "this takes a while" : "give it a few minutes";
+  await sendTelegramMessage(env, `🔍 Scan ${label} started, ${eta}...`);
   await triggerGithubWorkflow(env, timeframe);
 }
 
@@ -108,7 +113,7 @@ async function sendWelcomeMessage(env) {
       text: "👋 Binance SMC Scanner\n\n"
           + "Scans every Binance USDT-M futures pair for an "
           + "Order Block + swing point setup (SMC/ICT) with a weekly "
-          + "Fibonacci level inside the OB zone.\n\n"
+          + "or monthly Fibonacci level in the OB zone.\n\n"
           + "Pick a timeframe to scan:",
       reply_markup: {
         inline_keyboard: [
@@ -119,6 +124,9 @@ async function sendWelcomeMessage(env) {
           [
             { text: "1h", callback_data: "scan_1h" },
             { text: "4h", callback_data: "scan_4h" },
+          ],
+          [
+            { text: "All TF", callback_data: "scan_all" },
           ],
         ],
       },
