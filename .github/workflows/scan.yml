@@ -6,11 +6,11 @@ on:
       timeframe:
         description: "Timeframe to scan"
         type: choice
-        options: ["15m", "30m", "1h", "4h"]
+        options: ["15m", "30m", "1h", "4h", "all"]
         default: "30m"
   repository_dispatch:
     types: [telegram-scan]          # triggered remotely by the Cloudflare Worker
-                                     # (client_payload.timeframe = "15m"/"30m"/"1h"/"4h")
+                                     # (client_payload.timeframe = "15m"/"30m"/"1h"/"4h"/"all")
 
 jobs:
   scan:
@@ -18,7 +18,7 @@ jobs:
     # not GitHub's servers - Binance blocks GitHub's own datacenter IPs.
     # See README.md "Self-hosted runner" section for setup.
     runs-on: self-hosted
-    timeout-minutes: 45
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
 
@@ -33,9 +33,9 @@ jobs:
           fi
 
           case "$TF" in
-            15m|30m|1h|4h) ;;
+            15m|30m|1h|4h|all) ;;
             *)
-              echo "Unknown timeframe: $TF (expected 15m, 30m, 1h or 4h)"
+              echo "Unknown timeframe: $TF (expected 15m, 30m, 1h, 4h or all)"
               exit 1
               ;;
           esac
@@ -53,7 +53,7 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          FIB_TIMEFRAME: "1w"
+          FIB_TIMEFRAMES: "1w,1M"
           FIB_CANDLE: "last"
           GENERATE_CHARTS: "true"
           # TIMEFRAME comes from the step above via GITHUB_ENV
