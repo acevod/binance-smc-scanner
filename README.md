@@ -11,8 +11,9 @@ there's a candle that is the exact candle an active internal Order Block was
 built from AND the exact candle of a same-direction HH/HL/LH/LL swing label - plus a
 fresh Fair Value Gap, an unbroken local extreme after the BOS/CHoCH, no
 contradicting swing label since, the OB sitting in the correct premium/
-discount half of the trailing range, and at least one weekly Fibonacci
-level inside the OB zone.
+discount half of the trailing range, and at least one weekly or monthly
+Fibonacci level in the right half of the OB zone (upper half for bullish,
+lower half for bearish).
 
 ## How it works
 
@@ -170,6 +171,11 @@ dropdown (still needs the runner online).
 - `/scan30m` — scan the 30m timeframe
 - `/scan1h` — scan the 1h timeframe
 - `/scan4h` — scan the 4h timeframe
+- `/scanall` — scan 15m, 30m, 1h and 4h one after another (same as the
+  **All TF** button). Each timeframe sends its own result message and
+  charts; the timeframe picker comes back once at the end. It takes
+  roughly as long as the four scans put together, so `scan.yml`'s job
+  timeout is 180 minutes.
 
 There's no bare `/scan` anymore - a timeframe always has to be picked,
 either by tapping a button or typing the matching command.
@@ -195,24 +201,30 @@ defaults - override them via `scan.yml`'s `env:` block if needed:
   sit in the right half of LuxAlgo's trailing swing range: discount
   (bottom to equilibrium) for a bullish OB, premium (equilibrium to top)
   for a bearish OB.
-- `REQUIRE_FIB` (default `true`) — at least one Fibonacci level of the
-  higher-timeframe candle must sit inside the OB zone. This is a port of
-  LonesomeTheBlue's "Fibonacci levels MTF" indicator: for a bullish HTF
-  candle the level is `high - (high - low) * ratio`, for a bearish one
+- `REQUIRE_FIB` (default `true`) — at least one Fibonacci level of a
+  higher-timeframe candle must sit in the right **half** of the OB zone:
+  the upper half (midpoint to top) for a bullish OB, the lower half
+  (bottom to midpoint) for a bearish OB. Levels exactly on the midpoint
+  or the outer edge count. This is a port of LonesomeTheBlue's
+  "Fibonacci levels MTF" indicator: for a bullish HTF candle the level is
+  `high - (high - low) * ratio`, for a bearish one
   `low + (high - low) * ratio`. Only checked for pairs that already
-  matched, so it costs one tiny extra fetch per candidate.
-  - `FIB_TIMEFRAME` (default `1w`) — the indicator's "Higher Time Frame".
+  matched, so it costs a couple of tiny extra fetches per candidate.
+  - `FIB_TIMEFRAMES` (default `1w,1M`) — the indicator's "Higher Time
+    Frame". Weekly **or** monthly: a hit on either one is enough. A pair
+    with no closed monthly candle yet (listed < 1 month ago) is judged on
+    the weekly alone.
   - `FIB_CANDLE` (default `last`) — `last` = last closed HTF candle,
     `current` = the still-forming one (the indicator's "Current or Last
     HTF Candle").
   - `FIB_LEVELS` (default `0,0.236,0.382,0.5,0.618,0.786,1`) — the
     indicator's enabled-by-default levels; add `-0.382` / `1.236` for the
     extension levels it ships disabled.
-  - `scan.yml` sets `FIB_TIMEFRAME` and `FIB_CANDLE` explicitly in the
+  - `scan.yml` sets `FIB_TIMEFRAMES` and `FIB_CANDLE` explicitly in the
     `Run scanner` step - change them there, not just in the script.
-  - The fib grid always comes from the weekly candle that is "last" **as
-    of the scan**, not as of when the OB formed. An OB from a few weeks
-    ago is therefore checked against the most recent weekly range.
+  - The fib grids always come from the HTF candle that is "last" **as of
+    the scan**, not as of when the OB formed. An OB from a few weeks ago
+    is therefore checked against the most recent weekly/monthly range.
 - `GENERATE_CHARTS` — set to `"false"` for text-only results (faster).
 - `MAX_CONCURRENCY` (default 8) — how many symbols are fetched at once.
 - `API_TIMEOUT_MS` (default 30000) — ccxt request timeout; raise it if
@@ -227,7 +239,8 @@ defaults - override them via `scan.yml`'s `env:` block if needed:
   safe).
 
 **Each timeframe is judged on its own.** `/scan15m`, `/scan30m`, `/scan1h`
-and `/scan4h` only look at the picked timeframe - there's no confirmation
+and `/scan4h` only look at the picked timeframe (and `/scanall` just runs
+them one after another, with no cross-checking between them) - there's no confirmation
 on any other timeframe anymore. The `Resolve timeframe` step in `scan.yml`
 just passes the picked timeframe through as `TIMEFRAME`.
 
@@ -247,7 +260,8 @@ USDC-margined pairs are excluded too).
 > unbroken, no new same-type swing label may have formed since the
 > break, the whole OB zone must sit in discount (bullish) or premium
 > (bearish) of the trailing swing range, and at least one fib level of
-> the last closed weekly candle must fall inside the OB zone. If more
+> the last closed weekly or monthly candle must fall in the upper half
+> of a bullish OB / the lower half of a bearish OB. If more
 > than one candle in the window qualifies, the most recent one is used
 > as the headline result.
 
